@@ -1,0 +1,4 @@
+# ログファイルを無視
+data.json
+
+.claude/
