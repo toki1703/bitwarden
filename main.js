@@ -253,6 +253,18 @@ function buildFolderTree(folders) {
     return roots;
 }
 
+function pruneEmptyFolderTree(nodes, items) {
+    const result = [];
+    for (const node of nodes) {
+        const prunedChildren = pruneEmptyFolderTree(node.children, items);
+        const hasItems = node.folder && items.some(i => (i.folderId || null) === node.folder.id);
+        if (hasItems || prunedChildren.length > 0) {
+            result.push({ ...node, children: prunedChildren });
+        }
+    }
+    return result;
+}
+
 class BitwardenView extends ItemView {
     constructor(leaf, plugin) {
         super(leaf);
@@ -479,16 +491,18 @@ class BitwardenView extends ItemView {
                     const childFolders = allFolders
                         .filter(f => f.name.startsWith(prefix))
                         .map(f => ({ id: f.id, name: f.name.slice(prefix.length), _fullName: f.name }));
-                    if (childFolders.length) {
+                    const allItems = this.itemsCache || [];
+                    const childTree = pruneEmptyFolderTree(buildFolderTree(childFolders), allItems);
+                    if (childTree.length) {
                         const groupHeader = this.listContainer.createDiv('bw-group-label');
                         setIcon(groupHeader.createSpan('bw-group-icon'), 'folder');
                         groupHeader.createSpan({ text: 'フォルダ' });
-                        this.renderFolderTree(this.listContainer, buildFolderTree(childFolders), 0);
+                        this.renderFolderTree(this.listContainer, childTree, 0);
                     }
 
                     // アイテムを後に表示
                     const folderItems = items.filter(i => (i.folderId || null) === this.folderNav.id);
-                    if (!folderItems.length && !childFolders.length) {
+                    if (!folderItems.length && !childTree.length) {
                         const emptyEl = this.listContainer.createDiv('bw-empty');
                         setIcon(emptyEl.createSpan(), 'search');
                         emptyEl.createSpan({ text: query ? '見つかりません' : 'アイテムがありません' });
@@ -538,7 +552,7 @@ class BitwardenView extends ItemView {
             return;
         }
 
-        const tree = buildFolderTree(folders);
+        const tree = pruneEmptyFolderTree(buildFolderTree(folders), items);
         this.renderFolderTree(this.listContainer, tree, 0, 0);
     }
 
