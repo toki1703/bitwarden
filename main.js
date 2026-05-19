@@ -30,6 +30,7 @@ const ICONS = {
     'copy': '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
     'eye': '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
     'eye-off': '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/>',
+    'clock': '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
 };
 
 function setIcon(el, name) {
@@ -51,6 +52,63 @@ function extractDomain(uri) {
         return null;
     }
 }
+
+// --- TOTP ---
+
+function base32Decode(input) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    const s = input.toUpperCase().replace(/[^A-Z2-7]/g, '');
+    let bits = '';
+    for (const ch of s) {
+        const idx = alphabet.indexOf(ch);
+        if (idx < 0) continue;
+        bits += idx.toString(2).padStart(5, '0');
+    }
+    const bytes = new Uint8Array(Math.floor(bits.length / 8));
+    for (let i = 0; i < bytes.length; i++) {
+        bytes[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+    }
+    return bytes;
+}
+
+function parseTotpUri(totpValue) {
+    if (!totpValue) return null;
+    let secret = totpValue, digits = 6, period = 30;
+    if (totpValue.startsWith('otpauth://')) {
+        try {
+            const url = new URL(totpValue);
+            secret = url.searchParams.get('secret') || '';
+            digits = parseInt(url.searchParams.get('digits') || '6', 10);
+            period = parseInt(url.searchParams.get('period') || '30', 10);
+        } catch { return null; }
+    }
+    if (!secret) return null;
+    return { secret, digits, period };
+}
+
+async function generateTotp(secret, digits = 6, period = 30) {
+    const key = await crypto.subtle.importKey(
+        'raw',
+        base32Decode(secret),
+        { name: 'HMAC', hash: 'SHA-1' },
+        false,
+        ['sign']
+    );
+    const counter = Math.floor(Date.now() / 1000 / period);
+    const buf = new ArrayBuffer(8);
+    new DataView(buf).setUint32(4, counter, false);
+    const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', key, buf));
+    const offset = hmac[19] & 0xf;
+    const code = (
+        ((hmac[offset] & 0x7f) << 24) |
+        ((hmac[offset + 1] & 0xff) << 16) |
+        ((hmac[offset + 2] & 0xff) << 8) |
+        (hmac[offset + 3] & 0xff)
+    ) % (10 ** digits);
+    return code.toString().padStart(digits, '0');
+}
+
+// ---
 
 class BitwardenPlugin extends Plugin {
     sessionToken = null;
@@ -415,6 +473,26 @@ class BitwardenView extends ItemView {
                 });
             }
 
+            if (item.type === 1 && item.login?.totp) {
+                const btn = actions.createEl('button', {
+                    cls: 'bw-copy-btn',
+                    attr: { title: 'TOTPコードをコピー' },
+                });
+                setIcon(btn, 'clock');
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const parsed = parseTotpUri(item.login.totp);
+                    if (!parsed) return;
+                    try {
+                        const code = await generateTotp(parsed.secret, parsed.digits, parsed.period);
+                        await navigator.clipboard.writeText(code);
+                        new Notice(`TOTPコード: ${code}`);
+                    } catch {
+                        new Notice('TOTPコードの生成に失敗しました');
+                    }
+                });
+            }
+
             el.addEventListener('click', () => new BitwardenItemModal(this.app, item).open());
         }
     }
@@ -424,9 +502,11 @@ class BitwardenItemModal extends Modal {
     constructor(app, item) {
         super(app);
         this.item = item;
+        this._totpInterval = null;
+        this._lastCounter = -1;
     }
 
-    onOpen() {
+    async onOpen() {
         const { contentEl } = this;
         contentEl.addClass('bw-modal');
         contentEl.createEl('h2', { text: this.item.name, cls: 'bw-modal-title' });
@@ -436,7 +516,7 @@ class BitwardenItemModal extends Modal {
         if (type === 1 && login) {
             this.addField('ユーザー名', login.username, { copyable: true });
             this.addField('パスワード', login.password, { copyable: true, masked: true });
-            if (login.totp) this.addField('TOTP', login.totp, { copyable: true });
+            if (login.totp) await this.addTotpField(login.totp);
             if (login.uris?.length) {
                 login.uris.forEach((u, i) =>
                     this.addField(i === 0 ? 'URL' : `URL ${i + 1}`, u.uri));
@@ -453,6 +533,69 @@ class BitwardenItemModal extends Modal {
         }
 
         if (notes) this.addField('メモ', notes);
+    }
+
+    async addTotpField(totpValue) {
+        const parsed = parseTotpUri(totpValue);
+        if (!parsed) {
+            this.addField('TOTP', totpValue, { copyable: true });
+            return;
+        }
+        const { secret, digits, period } = parsed;
+
+        const row = this.contentEl.createDiv('bw-field-row');
+        row.createEl('label', { text: 'TOTP', cls: 'bw-field-label' });
+
+        const box = row.createDiv('bw-totp-box');
+        const topRow = box.createDiv('bw-totp-code-row');
+        const codeEl = topRow.createEl('span', { cls: 'bw-totp-code', text: '--- ---' });
+        const timerEl = topRow.createEl('span', { cls: 'bw-totp-timer', text: '' });
+        const copyBtn = topRow.createEl('button', {
+            cls: 'bw-icon-btn',
+            attr: { title: 'TOTPコードをコピー' },
+        });
+        setIcon(copyBtn, 'copy');
+
+        const gaugeTrack = box.createDiv('bw-totp-gauge');
+        const gaugeFill = gaugeTrack.createDiv('bw-totp-gauge-fill');
+
+        let currentCode = '';
+
+        const update = async () => {
+            const now = Math.floor(Date.now() / 1000);
+            const counter = Math.floor(now / period);
+            const remaining = period - (now % period);
+            const pct = (remaining / period) * 100;
+
+            if (counter !== this._lastCounter) {
+                this._lastCounter = counter;
+                try {
+                    currentCode = await generateTotp(secret, digits, period);
+                } catch {
+                    currentCode = '';
+                }
+                const fmt = digits === 6 && currentCode
+                    ? `${currentCode.slice(0, 3)} ${currentCode.slice(3)}`
+                    : (currentCode || '--- ---');
+                codeEl.textContent = fmt;
+            }
+
+            timerEl.textContent = `${remaining}s`;
+            gaugeFill.style.width = `${pct}%`;
+
+            const warn = remaining <= 5;
+            gaugeFill.classList.toggle('bw-totp-gauge-fill--warning', warn);
+            timerEl.classList.toggle('bw-totp-timer--warning', warn);
+        };
+
+        copyBtn.addEventListener('click', () => {
+            if (!currentCode) return;
+            navigator.clipboard.writeText(currentCode);
+            new Notice('TOTPコードをコピーしました');
+        });
+
+        await update();
+        this._totpInterval = setInterval(update, 1000);
     }
 
     addField(label, value, opts = {}) {
@@ -490,6 +633,10 @@ class BitwardenItemModal extends Modal {
     }
 
     onClose() {
+        if (this._totpInterval) {
+            clearInterval(this._totpInterval);
+            this._totpInterval = null;
+        }
         this.contentEl.empty();
     }
 }

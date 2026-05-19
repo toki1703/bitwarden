@@ -443,3 +443,64 @@
     word-break: break-all;
     user-select: text;
 }
+
+/* TOTP表示 */
+.bw-totp-box {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    background: var(--background-modifier-form-field);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    padding: 0.55rem 0.7rem 0.6rem;
+}
+
+.bw-totp-code-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.bw-totp-code {
+    flex: 1;
+    font-size: 1.6rem;
+    font-weight: 700;
+    font-family: var(--font-monospace);
+    color: var(--text-normal);
+    letter-spacing: 0.12em;
+    user-select: text;
+    line-height: 1;
+}
+
+.bw-totp-timer {
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-family: var(--font-monospace);
+    color: var(--text-muted);
+    min-width: 2.4rem;
+    text-align: right;
+    transition: color 0.2s;
+}
+
+.bw-totp-timer--warning {
+    color: var(--text-error);
+}
+
+.bw-totp-gauge {
+    height: 3px;
+    background: var(--background-modifier-border);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.bw-totp-gauge-fill {
+    height: 100%;
+    width: 100%;
+    background: var(--color-accent);
+    border-radius: 2px;
+    transition: width 1s linear, background 0.2s;
+}
+
+.bw-totp-gauge-fill--warning {
+    background: var(--text-error);
+}
