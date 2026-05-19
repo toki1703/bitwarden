@@ -504,3 +504,22 @@
 .bw-totp-gauge-fill--warning {
     background: var(--text-error);
 }
+
+/* フォルダナビゲーション */
+.bw-folder-back-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--background-modifier-border);
+    margin-bottom: 0.25rem;
+}
+
+.bw-folder-current-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-normal);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

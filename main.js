@@ -34,6 +34,7 @@ const ICONS = {
     'clock': '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
     'folder': '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
     'list': '<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
+    'arrow-left': '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
 };
 
 function setIcon(el, name) {
@@ -227,7 +228,10 @@ class BitwardenView extends ItemView {
         super(leaf);
         this.plugin = plugin;
         this.listContainer = null;
+        this.searchBar = null;
+        this.searchInput = null;
         this.searchTimer = null;
+        this.folderNav = null; // null = folder home, { id, name } = inside a folder
     }
 
     getViewType() { return VIEW_TYPE; }
@@ -369,25 +373,29 @@ class BitwardenView extends ItemView {
             await this.render();
         });
 
-        const searchBar = container.createDiv('bw-search-bar');
-        const searchIconEl = searchBar.createSpan('bw-search-icon');
+        this.folderNav = null;
+
+        this.searchBar = container.createDiv('bw-search-bar');
+        const searchIconEl = this.searchBar.createSpan('bw-search-icon');
         setIcon(searchIconEl, 'search');
-        const searchInput = searchBar.createEl('input', {
+        this.searchInput = this.searchBar.createEl('input', {
             type: 'text',
             placeholder: 'アイテムを検索...',
             cls: 'bw-search-input',
         });
-        searchInput.addEventListener('input', () => {
+        this.searchInput.addEventListener('input', () => {
             clearTimeout(this.searchTimer);
-            this.lastQuery = searchInput.value;
-            this.searchTimer = setTimeout(() => this.loadItems(searchInput.value), 300);
+            this.lastQuery = this.searchInput.value;
+            this.searchTimer = setTimeout(() => this.loadItems(this.searchInput.value), 300);
         });
 
         this.listContainer = container.createDiv('bw-list-container');
         this.lastQuery = '';
 
         await this.loadItems();
-        setTimeout(() => searchInput.focus(), 50);
+        if (this.plugin.settings.viewMode !== 'folder') {
+            setTimeout(() => this.searchInput.focus(), 50);
+        }
     }
 
     async loadItems(query = '') {
@@ -398,21 +406,33 @@ class BitwardenView extends ItemView {
         setIcon(loadingEl, 'loader-2');
 
         try {
-            const items = await this.plugin.listItems(query);
-            this.listContainer.empty();
-
-            if (!items.length) {
-                const emptyEl = this.listContainer.createDiv('bw-empty');
-                setIcon(emptyEl.createSpan(), 'search');
-                emptyEl.createSpan({ text: query ? '見つかりません' : 'アイテムがありません' });
-                return;
-            }
-
-            if (this.plugin.settings.viewMode === 'folder') {
-                const folders = await this.plugin.listFolders();
-                this.renderByFolder(items, folders);
+            if (this.plugin.settings.viewMode === 'folder' && !this.folderNav) {
+                if (this.searchBar) this.searchBar.style.display = 'none';
+                await this.loadFolderHome();
             } else {
-                this.renderByType(items);
+                if (this.searchBar) this.searchBar.style.display = '';
+                const items = await this.plugin.listItems(query);
+                this.listContainer.empty();
+
+                if (this.plugin.settings.viewMode === 'folder' && this.folderNav) {
+                    this.renderFolderBackButton();
+                    const folderItems = items.filter(i => (i.folderId || null) === this.folderNav.id);
+                    if (!folderItems.length) {
+                        const emptyEl = this.listContainer.createDiv('bw-empty');
+                        setIcon(emptyEl.createSpan(), 'search');
+                        emptyEl.createSpan({ text: query ? '見つかりません' : 'アイテムがありません' });
+                    } else {
+                        this.renderByType(folderItems);
+                    }
+                } else {
+                    if (!items.length) {
+                        const emptyEl = this.listContainer.createDiv('bw-empty');
+                        setIcon(emptyEl.createSpan(), 'search');
+                        emptyEl.createSpan({ text: query ? '見つかりません' : 'アイテムがありません' });
+                        return;
+                    }
+                    this.renderByType(items);
+                }
             }
         } catch (err) {
             if (err.message === 'SESSION_INVALID' || err.message === 'REFRESH_TOKEN_INVALID') {
@@ -427,6 +447,48 @@ class BitwardenView extends ItemView {
             setIcon(errEl.createSpan('bw-error-icon'), 'alert-circle');
             errEl.createEl('p', { text: err.message || '不明なエラーが発生しました' });
         }
+    }
+
+    async loadFolderHome() {
+        const folders = await this.plugin.listFolders();
+        this.listContainer.empty();
+
+        if (!folders.length) {
+            const emptyEl = this.listContainer.createDiv('bw-empty');
+            setIcon(emptyEl.createSpan(), 'folder');
+            emptyEl.createSpan({ text: 'フォルダがありません' });
+            return;
+        }
+
+        folders.sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+
+        for (const folder of folders) {
+            const el = this.listContainer.createDiv('bw-item');
+            const iconEl = el.createDiv('bw-item-icon');
+            setIcon(iconEl, 'folder');
+            const info = el.createDiv('bw-item-info');
+            info.createDiv({ text: folder.name, cls: 'bw-item-name' });
+            el.addEventListener('click', () => {
+                this.folderNav = { id: folder.id, name: folder.name };
+                if (this.searchInput) { this.searchInput.value = ''; this.lastQuery = ''; }
+                this.loadItems('');
+            });
+        }
+    }
+
+    renderFolderBackButton() {
+        const row = this.listContainer.createDiv('bw-folder-back-row');
+        const backBtn = row.createEl('button', {
+            cls: 'bw-icon-btn',
+            attr: { title: 'フォルダ一覧に戻る', 'aria-label': '戻る' },
+        });
+        setIcon(backBtn, 'arrow-left');
+        row.createSpan({ text: this.folderNav.name, cls: 'bw-folder-current-name' });
+        backBtn.addEventListener('click', () => {
+            this.folderNav = null;
+            if (this.searchInput) { this.searchInput.value = ''; this.lastQuery = ''; }
+            this.loadItems('');
+        });
     }
 
     renderByType(items) {
@@ -444,28 +506,6 @@ class BitwardenView extends ItemView {
             const filtered = items.filter(i => i.type === type && !i.favorite);
             if (!filtered.length) continue;
             this.renderGroup(label, icon, filtered);
-        }
-    }
-
-    renderByFolder(items, folders) {
-        const folderMap = new Map(folders.map(f => [f.id, f.name]));
-
-        const grouped = new Map();
-        for (const item of items) {
-            const fid = item.folderId || null;
-            if (!grouped.has(fid)) grouped.set(fid, []);
-            grouped.get(fid).push(item);
-        }
-
-        const sortedIds = [...grouped.keys()].sort((a, b) => {
-            if (a === null) return 1;
-            if (b === null) return -1;
-            return (folderMap.get(a) || '').localeCompare(folderMap.get(b) || '', 'ja');
-        });
-
-        for (const fid of sortedIds) {
-            const label = fid ? (folderMap.get(fid) || 'フォルダ不明') : 'フォルダなし';
-            this.renderGroup(label, 'folder', grouped.get(fid));
         }
     }
 
