@@ -232,6 +232,8 @@ class BitwardenView extends ItemView {
         this.searchInput = null;
         this.searchTimer = null;
         this.folderNav = null; // null = folder home, { id, name } = inside a folder
+        this.itemsCache = null;
+        this.foldersCache = null;
     }
 
     getViewType() { return VIEW_TYPE; }
@@ -338,6 +340,8 @@ class BitwardenView extends ItemView {
             syncBtn.addClass('bw-spinning');
             try {
                 await this.plugin.sync();
+                this.itemsCache = null;
+                this.foldersCache = null;
                 new Notice('Bitwarden: 同期完了');
                 await this.loadItems(this.lastQuery || '');
             } catch {
@@ -374,6 +378,8 @@ class BitwardenView extends ItemView {
         });
 
         this.folderNav = null;
+        this.itemsCache = null;
+        this.foldersCache = null;
 
         this.searchBar = container.createDiv('bw-search-bar');
         const searchIconEl = this.searchBar.createSpan('bw-search-icon');
@@ -398,6 +404,26 @@ class BitwardenView extends ItemView {
         }
     }
 
+    async getItems(query = '') {
+        if (!this.itemsCache) {
+            this.itemsCache = await this.plugin.listItems('');
+        }
+        if (!query) return this.itemsCache;
+        const q = query.toLowerCase();
+        return this.itemsCache.filter(item =>
+            item.name?.toLowerCase().includes(q) ||
+            item.login?.username?.toLowerCase().includes(q) ||
+            item.login?.uris?.[0]?.uri?.toLowerCase().includes(q)
+        );
+    }
+
+    async getFolders() {
+        if (!this.foldersCache) {
+            this.foldersCache = await this.plugin.listFolders();
+        }
+        return this.foldersCache;
+    }
+
     async loadItems(query = '') {
         if (!this.listContainer) return;
         this.listContainer.empty();
@@ -411,7 +437,7 @@ class BitwardenView extends ItemView {
                 await this.loadFolderHome();
             } else {
                 if (this.searchBar) this.searchBar.style.display = '';
-                const items = await this.plugin.listItems(query);
+                const items = await this.getItems(query);
                 this.listContainer.empty();
 
                 if (this.plugin.settings.viewMode === 'folder' && this.folderNav) {
@@ -450,7 +476,7 @@ class BitwardenView extends ItemView {
     }
 
     async loadFolderHome() {
-        const folders = await this.plugin.listFolders();
+        const folders = await this.getFolders();
         this.listContainer.empty();
 
         if (!folders.length) {
