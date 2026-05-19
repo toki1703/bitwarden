@@ -532,10 +532,10 @@ class BitwardenView extends ItemView {
         }
 
         const tree = buildFolderTree(folders);
-        this.renderFolderTree(this.listContainer, tree, 0);
+        this.renderFolderTree(this.listContainer, tree, 0, 0);
     }
 
-    renderFolderTree(container, nodes, depth) {
+    renderFolderTree(container, nodes, depth, maxDepth = Infinity) {
         for (const node of nodes) {
             const row = container.createDiv('bw-item');
 
@@ -560,8 +560,8 @@ class BitwardenView extends ItemView {
                 row.style.cursor = 'default';
             }
 
-            if (node.children.length > 0) {
-                this.renderFolderTree(container, node.children, depth + 1);
+            if (node.children.length > 0 && depth < maxDepth) {
+                this.renderFolderTree(container, node.children, depth + 1, maxDepth);
             }
         }
     }
