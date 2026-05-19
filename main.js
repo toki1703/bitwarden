@@ -35,8 +35,6 @@ const ICONS = {
     'folder': '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
     'list': '<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
     'arrow-left': '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
-    'chevron-right': '<polyline points="9 18 15 12 9 6"/>',
-    'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
 };
 
 function setIcon(el, name) {
@@ -225,7 +223,7 @@ class BitwardenPlugin extends Plugin {
     }
 }
 
-function buildFolderTree(folders, expandedPaths) {
+function buildFolderTree(folders) {
     const nodeMap = new Map();
     const roots = [];
 
@@ -242,7 +240,7 @@ function buildFolderTree(folders, expandedPaths) {
             const isLast = i === parts.length - 1;
 
             if (!nodeMap.has(path)) {
-                const node = { name: part, path, folder: null, children: [], expanded: expandedPaths.has(path) };
+                const node = { name: part, path, folder: null, children: [] };
                 nodeMap.set(path, node);
                 siblings.push(node);
             }
@@ -266,7 +264,6 @@ class BitwardenView extends ItemView {
         this.folderNav = null; // null = folder home, { id, name } = inside a folder
         this.itemsCache = null;
         this.foldersCache = null;
-        this.expandedFolderPaths = new Set();
     }
 
     getViewType() { return VIEW_TYPE; }
@@ -475,12 +472,27 @@ class BitwardenView extends ItemView {
 
                 if (this.plugin.settings.viewMode === 'folder' && this.folderNav) {
                     this.renderFolderBackButton();
+
+                    // 子フォルダを先に表示
+                    const allFolders = await this.getFolders();
+                    const prefix = this.folderNav.name + '/';
+                    const childFolders = allFolders
+                        .filter(f => f.name.startsWith(prefix))
+                        .map(f => ({ id: f.id, name: f.name.slice(prefix.length), _fullName: f.name }));
+                    if (childFolders.length) {
+                        const groupHeader = this.listContainer.createDiv('bw-group-label');
+                        setIcon(groupHeader.createSpan('bw-group-icon'), 'folder');
+                        groupHeader.createSpan({ text: 'フォルダ' });
+                        this.renderFolderTree(this.listContainer, buildFolderTree(childFolders), 0);
+                    }
+
+                    // アイテムを後に表示
                     const folderItems = items.filter(i => (i.folderId || null) === this.folderNav.id);
-                    if (!folderItems.length) {
+                    if (!folderItems.length && !childFolders.length) {
                         const emptyEl = this.listContainer.createDiv('bw-empty');
                         setIcon(emptyEl.createSpan(), 'search');
                         emptyEl.createSpan({ text: query ? '見つかりません' : 'アイテムがありません' });
-                    } else {
+                    } else if (folderItems.length) {
                         this.renderByType(folderItems);
                     }
                 } else {
@@ -519,26 +531,17 @@ class BitwardenView extends ItemView {
             return;
         }
 
-        const tree = buildFolderTree(folders, this.expandedFolderPaths);
+        const tree = buildFolderTree(folders);
         this.renderFolderTree(this.listContainer, tree, 0);
     }
 
     renderFolderTree(container, nodes, depth) {
         for (const node of nodes) {
-            const nodeEl = container.createDiv('bw-folder-node');
-            const row = nodeEl.createDiv('bw-item');
+            const row = container.createDiv('bw-item');
 
             if (depth > 0) {
                 const indent = row.createDiv();
                 indent.style.cssText = `width:${depth * 1.25}rem;flex-shrink:0`;
-            }
-
-            let expandBtn = null;
-            if (node.children.length > 0) {
-                expandBtn = row.createEl('button', { cls: 'bw-folder-expand-btn' });
-                setIcon(expandBtn, node.expanded ? 'chevron-down' : 'chevron-right');
-            } else {
-                row.createDiv('bw-folder-expand-spacer');
             }
 
             const iconEl = row.createDiv('bw-item-icon');
@@ -549,7 +552,7 @@ class BitwardenView extends ItemView {
 
             if (node.folder) {
                 row.addEventListener('click', () => {
-                    this.folderNav = { id: node.folder.id, name: node.folder.name };
+                    this.folderNav = { id: node.folder.id, name: node.folder._fullName || node.folder.name };
                     if (this.searchInput) { this.searchInput.value = ''; this.lastQuery = ''; }
                     this.loadItems('');
                 });
@@ -558,18 +561,7 @@ class BitwardenView extends ItemView {
             }
 
             if (node.children.length > 0) {
-                const childContainer = nodeEl.createDiv('bw-folder-children');
-                childContainer.style.display = node.expanded ? '' : 'none';
-                this.renderFolderTree(childContainer, node.children, depth + 1);
-
-                expandBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    node.expanded = !node.expanded;
-                    if (node.expanded) this.expandedFolderPaths.add(node.path);
-                    else this.expandedFolderPaths.delete(node.path);
-                    childContainer.style.display = node.expanded ? '' : 'none';
-                    setIcon(expandBtn, node.expanded ? 'chevron-down' : 'chevron-right');
-                });
+                this.renderFolderTree(container, node.children, depth + 1);
             }
         }
     }
@@ -581,7 +573,8 @@ class BitwardenView extends ItemView {
             attr: { title: 'フォルダ一覧に戻る', 'aria-label': '戻る' },
         });
         setIcon(backBtn, 'arrow-left');
-        row.createSpan({ text: this.folderNav.name, cls: 'bw-folder-current-name' });
+        const displayName = this.folderNav.name.split('/').pop();
+        row.createSpan({ text: displayName, cls: 'bw-folder-current-name' });
         backBtn.addEventListener('click', () => {
             this.folderNav = null;
             if (this.searchInput) { this.searchInput.value = ''; this.lastQuery = ''; }
