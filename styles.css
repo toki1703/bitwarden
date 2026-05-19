@@ -118,8 +118,8 @@
 }
 
 .bw-title-icon svg {
-    width: 0.95rem;
-    height: 0.95rem;
+    width: 1.15rem;
+    height: 1.15rem;
 }
 
 .bw-btn-group {
@@ -133,8 +133,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.75rem;
-    height: 1.75rem;
+    width: 2rem;
+    height: 2rem;
     border-radius: var(--radius-s);
     border: none;
     background: transparent;
@@ -156,8 +156,8 @@
 }
 
 .bw-icon-btn svg {
-    width: 0.875rem;
-    height: 0.875rem;
+    width: 1.15rem;
+    height: 1.15rem;
 }
 
 .bw-spinning svg {
@@ -187,8 +187,8 @@
 }
 
 .bw-search-icon svg {
-    width: 0.85rem;
-    height: 0.85rem;
+    width: 1.05rem;
+    height: 1.05rem;
 }
 
 .bw-search-input {
@@ -222,8 +222,8 @@
 }
 
 .bw-loading svg {
-    width: 1.25rem;
-    height: 1.25rem;
+    width: 1.5rem;
+    height: 1.5rem;
     animation: bw-spin 0.8s linear infinite;
 }
 
@@ -355,8 +355,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.5rem;
-    height: 1.5rem;
+    width: 2rem;
+    height: 2rem;
     border-radius: var(--radius-s);
     border: none;
     background: transparent;
@@ -372,8 +372,8 @@
 }
 
 .bw-copy-btn svg {
-    width: 0.8rem;
-    height: 0.8rem;
+    width: 1.15rem;
+    height: 1.15rem;
 }
 
 /* エラー状態 */
