@@ -493,7 +493,7 @@ class BitwardenView extends ItemView {
                         setIcon(emptyEl.createSpan(), 'search');
                         emptyEl.createSpan({ text: query ? '見つかりません' : 'アイテムがありません' });
                     } else if (folderItems.length) {
-                        this.renderByType(folderItems);
+                        this.renderItems(folderItems);
                     }
                 } else {
                     if (!items.length) {
@@ -521,13 +521,20 @@ class BitwardenView extends ItemView {
     }
 
     async loadFolderHome() {
-        const folders = await this.getFolders();
+        const [folders, items] = await Promise.all([this.getFolders(), this.getItems('')]);
         this.listContainer.empty();
 
+        const favorites = items.filter(i => i.favorite);
+        if (favorites.length) {
+            this.renderGroup('お気に入り', 'star', favorites);
+        }
+
         if (!folders.length) {
-            const emptyEl = this.listContainer.createDiv('bw-empty');
-            setIcon(emptyEl.createSpan(), 'folder');
-            emptyEl.createSpan({ text: 'フォルダがありません' });
+            if (!favorites.length) {
+                const emptyEl = this.listContainer.createDiv('bw-empty');
+                setIcon(emptyEl.createSpan(), 'folder');
+                emptyEl.createSpan({ text: 'フォルダがありません' });
+            }
             return;
         }
 
@@ -580,6 +587,20 @@ class BitwardenView extends ItemView {
             if (this.searchInput) { this.searchInput.value = ''; this.lastQuery = ''; }
             this.loadItems('');
         });
+    }
+
+    renderItems(items) {
+        const groups = [
+            { type: 1, label: 'ログイン', icon: 'key-round' },
+            { type: 3, label: 'カード', icon: 'credit-card' },
+            { type: 2, label: 'メモ', icon: 'file-text' },
+            { type: 4, label: 'ID', icon: 'user' },
+        ];
+        for (const { type, label, icon } of groups) {
+            const filtered = items.filter(i => i.type === type);
+            if (!filtered.length) continue;
+            this.renderGroup(label, icon, filtered);
+        }
     }
 
     renderByType(items) {
