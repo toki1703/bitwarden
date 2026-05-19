@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS = {
     bwPath: 'bw',
     useIcons: true,
     iconServer: 'https://icons.bitwarden.net',
+    viewMode: 'type', // 'type' | 'folder'
 };
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -31,6 +32,8 @@ const ICONS = {
     'eye': '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
     'eye-off': '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/>',
     'clock': '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+    'folder': '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+    'list': '<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
 };
 
 function setIcon(el, name) {
@@ -202,6 +205,13 @@ class BitwardenPlugin extends Plugin {
         return Array.isArray(parsed) ? parsed : [];
     }
 
+    async listFolders() {
+        const out = await this.execBw(['list', 'folders', '--session', this.sessionToken]);
+        if (!out) return [];
+        const parsed = JSON.parse(out);
+        return Array.isArray(parsed) ? parsed : [];
+    }
+
     async loadSettings() {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
         this.sessionToken = this.settings.sessionToken || null;
@@ -344,6 +354,21 @@ class BitwardenView extends ItemView {
             await this.render();
         });
 
+        const isFolder = this.plugin.settings.viewMode === 'folder';
+        const viewModeBtn = btnGroup.createEl('button', {
+            cls: 'bw-icon-btn',
+            attr: {
+                title: isFolder ? 'タイプ別表示' : 'フォルダ別表示',
+                'aria-label': 'ビュー切替',
+            },
+        });
+        setIcon(viewModeBtn, isFolder ? 'list' : 'folder');
+        viewModeBtn.addEventListener('click', async () => {
+            this.plugin.settings.viewMode = this.plugin.settings.viewMode === 'type' ? 'folder' : 'type';
+            await this.plugin.saveSettings();
+            await this.render();
+        });
+
         const searchBar = container.createDiv('bw-search-bar');
         const searchIconEl = searchBar.createSpan('bw-search-icon');
         setIcon(searchIconEl, 'search');
@@ -383,20 +408,11 @@ class BitwardenView extends ItemView {
                 return;
             }
 
-            const favorites = items.filter(i => i.favorite);
-            if (favorites.length) this.renderGroup('お気に入り', 'star', favorites);
-
-            const groups = [
-                { type: 1, label: 'ログイン', icon: 'key-round' },
-                { type: 3, label: 'カード', icon: 'credit-card' },
-                { type: 2, label: 'メモ', icon: 'file-text' },
-                { type: 4, label: 'ID', icon: 'user' },
-            ];
-
-            for (const { type, label, icon } of groups) {
-                const filtered = items.filter(i => i.type === type && !i.favorite);
-                if (!filtered.length) continue;
-                this.renderGroup(label, icon, filtered);
+            if (this.plugin.settings.viewMode === 'folder') {
+                const folders = await this.plugin.listFolders();
+                this.renderByFolder(items, folders);
+            } else {
+                this.renderByType(items);
             }
         } catch (err) {
             if (err.message === 'SESSION_INVALID' || err.message === 'REFRESH_TOKEN_INVALID') {
@@ -410,6 +426,46 @@ class BitwardenView extends ItemView {
             const errEl = this.listContainer.createDiv('bw-error-state');
             setIcon(errEl.createSpan('bw-error-icon'), 'alert-circle');
             errEl.createEl('p', { text: err.message || '不明なエラーが発生しました' });
+        }
+    }
+
+    renderByType(items) {
+        const favorites = items.filter(i => i.favorite);
+        if (favorites.length) this.renderGroup('お気に入り', 'star', favorites);
+
+        const groups = [
+            { type: 1, label: 'ログイン', icon: 'key-round' },
+            { type: 3, label: 'カード', icon: 'credit-card' },
+            { type: 2, label: 'メモ', icon: 'file-text' },
+            { type: 4, label: 'ID', icon: 'user' },
+        ];
+
+        for (const { type, label, icon } of groups) {
+            const filtered = items.filter(i => i.type === type && !i.favorite);
+            if (!filtered.length) continue;
+            this.renderGroup(label, icon, filtered);
+        }
+    }
+
+    renderByFolder(items, folders) {
+        const folderMap = new Map(folders.map(f => [f.id, f.name]));
+
+        const grouped = new Map();
+        for (const item of items) {
+            const fid = item.folderId || null;
+            if (!grouped.has(fid)) grouped.set(fid, []);
+            grouped.get(fid).push(item);
+        }
+
+        const sortedIds = [...grouped.keys()].sort((a, b) => {
+            if (a === null) return 1;
+            if (b === null) return -1;
+            return (folderMap.get(a) || '').localeCompare(folderMap.get(b) || '', 'ja');
+        });
+
+        for (const fid of sortedIds) {
+            const label = fid ? (folderMap.get(fid) || 'フォルダ不明') : 'フォルダなし';
+            this.renderGroup(label, 'folder', grouped.get(fid));
         }
     }
 
@@ -660,6 +716,20 @@ class BitwardenSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.bwPath)
                 .onChange(async value => {
                     this.plugin.settings.bwPath = value.trim() || 'bw';
+                    await this.plugin.saveSettings();
+                }));
+
+        containerEl.createEl('h3', { text: '表示' });
+
+        new Setting(containerEl)
+            .setName('表示モード')
+            .setDesc('アイテムをタイプ別またはフォルダ別にグループ表示します。パネルのボタンからも切り替えられます。')
+            .addDropdown(drop => drop
+                .addOption('type', 'タイプ別')
+                .addOption('folder', 'フォルダ別')
+                .setValue(this.plugin.settings.viewMode)
+                .onChange(async value => {
+                    this.plugin.settings.viewMode = value;
                     await this.plugin.saveSettings();
                 }));
 
