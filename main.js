@@ -35,6 +35,8 @@ const ICONS = {
     'folder': '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
     'list': '<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
     'arrow-left': '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+    'chevron-right': '<polyline points="9 18 15 12 9 6"/>',
+    'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
 };
 
 function setIcon(el, name) {
@@ -223,6 +225,36 @@ class BitwardenPlugin extends Plugin {
     }
 }
 
+function buildFolderTree(folders, expandedPaths) {
+    const nodeMap = new Map();
+    const roots = [];
+
+    const sorted = [...folders].sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+
+    for (const folder of sorted) {
+        const parts = folder.name.split('/').map(p => p.trim()).filter(Boolean);
+        let siblings = roots;
+        let path = '';
+
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            path = path ? `${path}/${part}` : part;
+            const isLast = i === parts.length - 1;
+
+            if (!nodeMap.has(path)) {
+                const node = { name: part, path, folder: null, children: [], expanded: expandedPaths.has(path) };
+                nodeMap.set(path, node);
+                siblings.push(node);
+            }
+            const node = nodeMap.get(path);
+            if (isLast) node.folder = folder;
+            siblings = node.children;
+        }
+    }
+
+    return roots;
+}
+
 class BitwardenView extends ItemView {
     constructor(leaf, plugin) {
         super(leaf);
@@ -234,6 +266,7 @@ class BitwardenView extends ItemView {
         this.folderNav = null; // null = folder home, { id, name } = inside a folder
         this.itemsCache = null;
         this.foldersCache = null;
+        this.expandedFolderPaths = new Set();
     }
 
     getViewType() { return VIEW_TYPE; }
@@ -486,19 +519,58 @@ class BitwardenView extends ItemView {
             return;
         }
 
-        folders.sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+        const tree = buildFolderTree(folders, this.expandedFolderPaths);
+        this.renderFolderTree(this.listContainer, tree, 0);
+    }
 
-        for (const folder of folders) {
-            const el = this.listContainer.createDiv('bw-item');
-            const iconEl = el.createDiv('bw-item-icon');
+    renderFolderTree(container, nodes, depth) {
+        for (const node of nodes) {
+            const nodeEl = container.createDiv('bw-folder-node');
+            const row = nodeEl.createDiv('bw-item');
+
+            if (depth > 0) {
+                const indent = row.createDiv();
+                indent.style.cssText = `width:${depth * 1.25}rem;flex-shrink:0`;
+            }
+
+            let expandBtn = null;
+            if (node.children.length > 0) {
+                expandBtn = row.createEl('button', { cls: 'bw-folder-expand-btn' });
+                setIcon(expandBtn, node.expanded ? 'chevron-down' : 'chevron-right');
+            } else {
+                row.createDiv('bw-folder-expand-spacer');
+            }
+
+            const iconEl = row.createDiv('bw-item-icon');
             setIcon(iconEl, 'folder');
-            const info = el.createDiv('bw-item-info');
-            info.createDiv({ text: folder.name, cls: 'bw-item-name' });
-            el.addEventListener('click', () => {
-                this.folderNav = { id: folder.id, name: folder.name };
-                if (this.searchInput) { this.searchInput.value = ''; this.lastQuery = ''; }
-                this.loadItems('');
-            });
+
+            const info = row.createDiv('bw-item-info');
+            info.createDiv({ text: node.name, cls: 'bw-item-name' });
+
+            if (node.folder) {
+                row.addEventListener('click', () => {
+                    this.folderNav = { id: node.folder.id, name: node.folder.name };
+                    if (this.searchInput) { this.searchInput.value = ''; this.lastQuery = ''; }
+                    this.loadItems('');
+                });
+            } else {
+                row.style.cursor = 'default';
+            }
+
+            if (node.children.length > 0) {
+                const childContainer = nodeEl.createDiv('bw-folder-children');
+                childContainer.style.display = node.expanded ? '' : 'none';
+                this.renderFolderTree(childContainer, node.children, depth + 1);
+
+                expandBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    node.expanded = !node.expanded;
+                    if (node.expanded) this.expandedFolderPaths.add(node.path);
+                    else this.expandedFolderPaths.delete(node.path);
+                    childContainer.style.display = node.expanded ? '' : 'none';
+                    setIcon(expandBtn, node.expanded ? 'chevron-down' : 'chevron-right');
+                });
+            }
         }
     }
 
