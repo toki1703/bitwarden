@@ -749,12 +749,12 @@ class BitwardenItemModal extends Modal {
         }
 
         if (type === 3 && card) {
-            this.addField('カード番号', card.number, { copyable: true, masked: true });
+            this.addField('カード番号', card.number, { copyable: true, masked: false });
             this.addField('カード名義', card.cardholderName);
             if (card.expMonth && card.expYear) {
                 this.addField('有効期限', `${card.expMonth}/${card.expYear}`);
             }
-            if (card.code) this.addField('CVV', card.code, { copyable: true, masked: true });
+            if (card.code) this.addField('CVV', card.code, { copyable: true, masked: false });
         }
 
         if (notes) this.addField('メモ', notes);
@@ -835,12 +835,12 @@ class BitwardenItemModal extends Modal {
 
         let revealed = false;
         if (masked) {
-            valueEl.textContent = '••••••••';
+            valueEl.textContent = "•".repeat(value.length);
             const eyeBtn = valueArea.createEl('button', { cls: 'bw-icon-btn' });
             setIcon(eyeBtn, 'eye');
             eyeBtn.addEventListener('click', () => {
                 revealed = !revealed;
-                valueEl.textContent = revealed ? value : '••••••••';
+                valueEl.textContent = revealed ? value : "•".repeat(value.length);
                 setIcon(eyeBtn, revealed ? 'eye-off' : 'eye');
             });
         } else {
