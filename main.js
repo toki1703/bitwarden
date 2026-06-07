@@ -11,6 +11,7 @@ const DEFAULT_SETTINGS = {
     useIcons: true,
     iconServer: 'https://icons.bitwarden.net',
     viewMode: 'type', // 'type' | 'folder'
+    showCopyButtons: true,
 };
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -669,50 +670,52 @@ class BitwardenView extends ItemView {
 
             const actions = el.createDiv('bw-item-actions');
 
-            if (item.type === 1 && item.login?.username) {
-                const btn = actions.createEl('button', {
-                    cls: 'bw-copy-btn',
-                    attr: { title: 'ユーザー名をコピー' },
-                });
-                setIcon(btn, 'user');
-                btn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    navigator.clipboard.writeText(item.login.username);
-                    new Notice('ユーザー名をコピーしました');
-                });
-            }
+            if (this.plugin.settings.showCopyButtons) {
+                if (item.type === 1 && item.login?.username) {
+                    const btn = actions.createEl('button', {
+                        cls: 'bw-copy-btn',
+                        attr: { title: 'ユーザー名をコピー' },
+                    });
+                    setIcon(btn, 'user');
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        navigator.clipboard.writeText(item.login.username);
+                        new Notice('ユーザー名をコピーしました');
+                    });
+                }
 
-            if (item.type === 1 && item.login?.password) {
-                const btn = actions.createEl('button', {
-                    cls: 'bw-copy-btn',
-                    attr: { title: 'パスワードをコピー' },
-                });
-                setIcon(btn, 'copy');
-                btn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    navigator.clipboard.writeText(item.login.password);
-                    new Notice('パスワードをコピーしました');
-                });
-            }
+                if (item.type === 1 && item.login?.password) {
+                    const btn = actions.createEl('button', {
+                        cls: 'bw-copy-btn',
+                        attr: { title: 'パスワードをコピー' },
+                    });
+                    setIcon(btn, 'copy');
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        navigator.clipboard.writeText(item.login.password);
+                        new Notice('パスワードをコピーしました');
+                    });
+                }
 
-            if (item.type === 1 && item.login?.totp) {
-                const btn = actions.createEl('button', {
-                    cls: 'bw-copy-btn',
-                    attr: { title: 'TOTPコードをコピー' },
-                });
-                setIcon(btn, 'clock');
-                btn.addEventListener('click', async (e) => {
-                    e.stopPropagation();
-                    const parsed = parseTotpUri(item.login.totp);
-                    if (!parsed) return;
-                    try {
-                        const code = await generateTotp(parsed.secret, parsed.digits, parsed.period);
-                        await navigator.clipboard.writeText(code);
-                        new Notice(`TOTPコード: ${code}`);
-                    } catch {
-                        new Notice('TOTPコードの生成に失敗しました');
-                    }
-                });
+                if (item.type === 1 && item.login?.totp) {
+                    const btn = actions.createEl('button', {
+                        cls: 'bw-copy-btn',
+                        attr: { title: 'TOTPコードをコピー' },
+                    });
+                    setIcon(btn, 'clock');
+                    btn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        const parsed = parseTotpUri(item.login.totp);
+                        if (!parsed) return;
+                        try {
+                            const code = await generateTotp(parsed.secret, parsed.digits, parsed.period);
+                            await navigator.clipboard.writeText(code);
+                            new Notice(`TOTPコード: ${code}`);
+                        } catch {
+                            new Notice('TOTPコードの生成に失敗しました');
+                        }
+                    });
+                }
             }
 
             el.addEventListener('click', () => new BitwardenItemModal(this.app, item).open());
@@ -886,6 +889,16 @@ class BitwardenSettingTab extends PluginSettingTab {
                 }));
 
         containerEl.createEl('h3', { text: '表示' });
+
+        new Setting(containerEl)
+            .setName('コピーボタンを表示')
+            .setDesc('リスト表示でユーザー名・パスワード・TOTPのクイックコピーボタンを表示します。オフにするとアイテムをクリックして詳細モーダルからコピーできます。')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.showCopyButtons)
+                .onChange(async value => {
+                    this.plugin.settings.showCopyButtons = value;
+                    await this.plugin.saveSettings();
+                }));
 
         new Setting(containerEl)
             .setName('表示モード')
