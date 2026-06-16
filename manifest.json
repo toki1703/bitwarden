@@ -1,7 +1,7 @@
 {
 	"id": "bitwarden",
 	"name": "Bitwarden",
-	"version": "2.0.2",
+	"version": "2.0.3",
 	"minAppVersion": "1.12.0",
 	"description": "サイドパネルから Bitwarden の Vault を閲覧できる、読み取り専用のコミュニティプラグインです。",
 	"author": "ときくん",
