@@ -808,6 +808,26 @@ class BitwardenPlugin extends Plugin {
                 };
             }
         }
+
+        const fieldsRaw = field(c, 'fields') || [];
+        if (fieldsRaw.length) {
+            item.fields = [];
+            for (const f of fieldsRaw) {
+                const fType = field(f, 'type');
+                const fName = field(f, 'name') ? await dec(field(f, 'name')) : '';
+                const fValue = field(f, 'value');
+                const decField = { name: fName, type: fType };
+                if (fType === 2) {
+                    decField.value = fValue === 'true' || fValue === true;
+                } else if (fType === 3) {
+                    decField.linkedId = field(f, 'linkedId');
+                } else {
+                    decField.value = fValue ? await dec(fValue) : '';
+                }
+                item.fields.push(decField);
+            }
+        }
+
         return item;
     }
 
@@ -1508,6 +1528,28 @@ class BitwardenItemModal extends Modal {
         }
 
         if (notes) this.addField('メモ', notes);
+
+        const customFields = this.item.fields;
+        if (customFields?.length) {
+            const LINKED_NAMES = {
+                100: 'ユーザー名', 101: 'パスワード',
+                300: 'カード名義', 301: '有効期限（月）', 302: '有効期限（年）',
+                303: 'CVV', 304: 'ブランド', 305: 'カード番号',
+            };
+            for (const f of customFields) {
+                const label = f.name || '（名前なし）';
+                if (f.type === 0) {
+                    this.addField(label, f.value, { copyable: true });
+                } else if (f.type === 1) {
+                    this.addField(label, f.value, { copyable: true, masked: true });
+                } else if (f.type === 2) {
+                    this.addBooleanField(label, f.value);
+                } else if (f.type === 3) {
+                    const linkedName = LINKED_NAMES[f.linkedId] ?? `ID:${f.linkedId}`;
+                    this.addLinkedField(label, linkedName);
+                }
+            }
+        }
     }
 
     async addTotpField(totpValue) {
@@ -1571,6 +1613,24 @@ class BitwardenItemModal extends Modal {
 
         await update();
         this._totpInterval = setInterval(update, 1000);
+    }
+
+    addBooleanField(label, value) {
+        const row = this.contentEl.createDiv('bw-field-row');
+        row.createEl('label', { text: label, cls: 'bw-field-label' });
+        const valueArea = row.createDiv('bw-field-value-area');
+        const icon = valueArea.createEl('span', { cls: 'bw-icon-btn bw-field-bool' });
+        setIcon(icon, value ? 'check-circle' : 'x-circle');
+        valueArea.createEl('span', { cls: 'bw-field-value', text: value ? 'true' : 'false' });
+    }
+
+    addLinkedField(label, linkedName) {
+        const row = this.contentEl.createDiv('bw-field-row');
+        row.createEl('label', { text: label, cls: 'bw-field-label' });
+        const valueArea = row.createDiv('bw-field-value-area');
+        const icon = valueArea.createEl('span', { cls: 'bw-icon-btn bw-field-linked' });
+        setIcon(icon, 'link');
+        valueArea.createEl('span', { cls: 'bw-field-value', text: linkedName });
     }
 
     addField(label, value, opts = {}) {
