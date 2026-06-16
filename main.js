@@ -1185,6 +1185,12 @@ class BitwardenView extends ItemView {
                 }
             }
             if (matchNotes(item.notes)) return true;
+            if (item.fields) {
+                for (const f of item.fields) {
+                    if (matchText(f.name)) return true;
+                    if (f.type === 0 && matchText(f.value)) return true;
+                }
+            }
             return false;
         });
     }
