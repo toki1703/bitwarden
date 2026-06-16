@@ -1,9 +1,9 @@
 {
 	"id": "bitwarden",
 	"name": "Bitwarden",
-	"version": "2.0.0",
+	"version": "2.0.1",
 	"minAppVersion": "1.12.0",
-	"description": "Bitwarden",
+	"description": "Obsidian のサイドパネルから Bitwarden の Vault を閲覧できる、読み取り専用のコミュニティプラグインです。",
 	"author": "ときくん",
 	"authorUrl": "https://github.com/toki1703",
 	"isDesktopOnly": false
