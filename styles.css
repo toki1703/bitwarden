@@ -444,6 +444,73 @@
     user-select: text;
 }
 
+/* URL折り畳みセクション */
+.bw-urls-section {
+    margin-bottom: 0.5rem;
+}
+
+.bw-urls-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    width: 100%;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0.2rem 0;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    box-shadow: none;
+}
+
+.bw-urls-toggle:hover {
+    color: var(--text-normal);
+    background: none;
+    box-shadow: none;
+}
+
+.bw-urls-toggle-icon {
+    display: flex;
+    align-items: center;
+    width: 0.85rem;
+    height: 0.85rem;
+    flex-shrink: 0;
+}
+
+.bw-urls-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-top: 0.25rem;
+}
+
+.bw-url-item {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    background: var(--background-modifier-form-field);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    padding: 0.4rem 0.6rem;
+    min-height: 2rem;
+    min-width: 0;
+}
+
+.bw-url-text {
+    flex: 1;
+    font-size: 0.875rem;
+    font-family: var(--font-monospace);
+    color: var(--text-normal);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    user-select: text;
+    min-width: 0;
+}
+
 /* TOTP表示 */
 .bw-totp-box {
     display: flex;

@@ -1471,8 +1471,30 @@ class BitwardenItemModal extends Modal {
             this.addField('パスワード', login.password, { copyable: true, masked: true });
             if (login.totp) await this.addTotpField(login.totp);
             if (login.uris?.length) {
-                login.uris.forEach((u, i) =>
-                    this.addField(i === 0 ? 'URL' : `URL ${i + 1}`, u.uri));
+                const urlCount = login.uris.length;
+                const section = this.contentEl.createDiv('bw-urls-section');
+                const toggle = section.createEl('button', { cls: 'bw-urls-toggle' });
+                const toggleIcon = toggle.createSpan({ cls: 'bw-urls-toggle-icon' });
+                setIcon(toggleIcon, 'chevron-right');
+                toggle.createSpan({ text: `URL (${urlCount})` });
+                const list = section.createDiv('bw-urls-list');
+                list.style.display = 'none';
+                toggle.addEventListener('click', () => {
+                    const isOpen = list.style.display !== 'none';
+                    list.style.display = isOpen ? 'none' : '';
+                    setIcon(toggleIcon, isOpen ? 'chevron-right' : 'chevron-down');
+                });
+                login.uris.forEach((u) => {
+                    const item = list.createDiv('bw-url-item');
+                    item.createEl('span', { cls: 'bw-url-text', text: u.uri });
+                    const copyBtn = item.createEl('button', { cls: 'bw-icon-btn', attr: { title: 'URLをコピー' } });
+                    setIcon(copyBtn, 'copy');
+                    copyBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        navigator.clipboard.writeText(u.uri);
+                        new Notice('URLをコピーしました');
+                    });
+                });
             }
         }
 
