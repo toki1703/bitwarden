@@ -1,5 +1,5 @@
 # ログファイルを無視
 data.json
-
+.vscode/
 .claude/
 %USERPROFILE%
