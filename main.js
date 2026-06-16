@@ -1308,7 +1308,8 @@ class BitwardenView extends ItemView {
         setIcon(groupHeader.createSpan('bw-group-icon'), icon);
         groupHeader.createSpan({ text: `${label}  ${items.length}` });
 
-        for (const item of items) {
+        const sortedItems = [...items].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ja'));
+        for (const item of sortedItems) {
             const el = group.createDiv('bw-item');
 
             const itemIcon = el.createDiv('bw-item-icon');
