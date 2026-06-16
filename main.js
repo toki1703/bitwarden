@@ -1258,15 +1258,26 @@ class BitwardenView extends ItemView {
 
     renderFolderBackButton() {
         const row = this.listContainer.createDiv('bw-folder-back-row');
+        const segments = this.folderNav.name.split('/');
+        const isNested = segments.length > 1;
         const backBtn = row.createEl('button', {
             cls: 'bw-icon-btn',
-            attr: { title: 'フォルダ一覧に戻る', 'aria-label': '戻る' },
+            attr: { title: isNested ? '1つ上のフォルダに戻る' : 'フォルダ一覧に戻る', 'aria-label': '戻る' },
         });
         setIcon(backBtn, 'arrow-left');
-        const displayName = this.folderNav.name.split('/').pop();
+        const displayName = segments[segments.length - 1];
         row.createSpan({ text: displayName, cls: 'bw-folder-current-name' });
-        backBtn.addEventListener('click', () => {
-            this.folderNav = null;
+        backBtn.addEventListener('click', async () => {
+            if (isNested) {
+                const parentPath = segments.slice(0, -1).join('/');
+                const allFolders = await this.getFolders();
+                const parentFolder = allFolders.find(f => f.name === parentPath);
+                this.folderNav = parentFolder
+                    ? { id: parentFolder.id, name: parentPath }
+                    : null;
+            } else {
+                this.folderNav = null;
+            }
             if (this.searchInput) { this.searchInput.value = ''; this.lastQuery = ''; }
             this.loadItems('');
         });
