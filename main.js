@@ -1283,8 +1283,12 @@ class BitwardenView extends ItemView {
             this.renderGroup('お気に入り', 'star', favorites);
         }
 
+        const noFolderItems = items.filter(i => (i.folderId || null) === null && !i.favorite);
+
         if (!folders.length) {
-            if (!favorites.length) {
+            if (noFolderItems.length) {
+                this.renderGroup('フォルダなし', 'inbox', noFolderItems);
+            } else if (!favorites.length) {
                 const emptyEl = this.listContainer.createDiv('bw-empty');
                 setIcon(emptyEl.createSpan(), 'folder');
                 emptyEl.createSpan({ text: 'フォルダがありません' });
@@ -1297,6 +1301,10 @@ class BitwardenView extends ItemView {
         setIcon(folderHeader.createSpan('bw-group-icon'), 'folder');
         folderHeader.createSpan({ text: 'フォルダ別' });
         this.renderFolderTree(this.listContainer, tree, 0, 0);
+
+        if (noFolderItems.length) {
+            this.renderGroup('フォルダなし', 'inbox', noFolderItems);
+        }
     }
 
     renderFolderTree(container, nodes, depth, maxDepth = Infinity) {
