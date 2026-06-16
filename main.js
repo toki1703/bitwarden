@@ -12,8 +12,8 @@ const DEFAULT_SETTINGS = {
     deviceId: '',            // generated UUID
     useIcons: true,
     iconServer: 'https://icons.bitwarden.net',
-    viewMode: 'type',        // 'type' | 'folder'
-    showCopyButtons: true,
+    viewMode: 'folder',      // 'type' | 'folder'
+    showCopyButtons: false,
     // persisted session (sensitive)
     accessToken: null,
     tokenExpiresAt: 0,
