@@ -1,10 +1,10 @@
 {
 	"id": "bitwarden",
 	"name": "Bitwarden",
-	"version": "1.0.0",
+	"version": "2.0.0",
 	"minAppVersion": "1.12.0",
 	"description": "Bitwarden",
 	"author": "ときくん",
 	"authorUrl": "https://github.com/toki1703",
-	"isDesktopOnly": true
+	"isDesktopOnly": false
 }

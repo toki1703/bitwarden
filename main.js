@@ -1,18 +1,504 @@
 'use strict';
 
-const { Plugin, ItemView, Modal, Notice, Setting, PluginSettingTab } = require('obsidian');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
+const { Plugin, ItemView, Modal, Notice, Setting, PluginSettingTab, requestUrl } = require('obsidian');
 
-const execFileAsync = promisify(execFile);
 const VIEW_TYPE = 'bitwarden-panel';
 const DEFAULT_SETTINGS = {
-    bwPath: 'bw',
+    region: 'us',            // 'us' | 'eu' | 'self'
+    serverUrl: '',           // base URL when region === 'self'
+    email: '',
+    clientId: '',            // personal API key client_id (user.xxxx)
+    clientSecret: '',        // personal API key client_secret
+    deviceId: '',            // generated UUID
     useIcons: true,
     iconServer: 'https://icons.bitwarden.net',
-    viewMode: 'type', // 'type' | 'folder'
+    viewMode: 'type',        // 'type' | 'folder'
     showCopyButtons: true,
+    // persisted session (sensitive)
+    accessToken: null,
+    tokenExpiresAt: 0,
+    userKeyB64: null,        // decrypted user key (enc[32] || mac[32]) base64
 };
+
+// ============================================================
+// Argon2id + BLAKE2b (pure JS) — RFC 7693 / RFC 9106
+// Verified against Node blake2b512 and the RFC 9106 Argon2id vector.
+// ============================================================
+
+const BLAKE2B_IV = new Uint32Array([
+    0xf3bcc908, 0x6a09e667, 0x84caa73b, 0xbb67ae85,
+    0xfe94f82b, 0x3c6ef372, 0x5f1d36f1, 0xa54ff53a,
+    0xade682d1, 0x510e527f, 0x2b3e6c1f, 0x9b05688c,
+    0xfb41bd6b, 0x1f83d9ab, 0x137e2179, 0x5be0cd19,
+]);
+
+const SIGMA = [
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+    [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4],
+    [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8],
+    [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13],
+    [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9],
+    [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11],
+    [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10],
+    [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5],
+    [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0],
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+];
+
+function rotr64(v, i, c) {
+    const lo = v[2 * i], hi = v[2 * i + 1];
+    let nlo, nhi;
+    if (c === 32) { nlo = hi; nhi = lo; }
+    else if (c < 32) {
+        nlo = ((lo >>> c) | (hi << (32 - c))) >>> 0;
+        nhi = ((hi >>> c) | (lo << (32 - c))) >>> 0;
+    } else {
+        const d = c - 32;
+        nlo = ((hi >>> d) | (lo << (32 - d))) >>> 0;
+        nhi = ((lo >>> d) | (hi << (32 - d))) >>> 0;
+    }
+    v[2 * i] = nlo; v[2 * i + 1] = nhi;
+}
+
+function add64(v, a, lo2, hi2) {
+    const al = v[2 * a], ah = v[2 * a + 1];
+    const lo = (al + lo2) >>> 0;
+    const carry = ((al >>> 0) + (lo2 >>> 0) > 0xffffffff) ? 1 : 0;
+    v[2 * a] = lo;
+    v[2 * a + 1] = (ah + hi2 + carry) >>> 0;
+}
+
+function xor64(v, a, b) {
+    v[2 * a] ^= v[2 * b];
+    v[2 * a + 1] ^= v[2 * b + 1];
+}
+
+function bG(v, m, r, i, a, b, c, d) {
+    const x = SIGMA[r][2 * i], y = SIGMA[r][2 * i + 1];
+    add64(v, a, v[2 * b], v[2 * b + 1]); add64(v, a, m[2 * x], m[2 * x + 1]);
+    xor64(v, d, a); rotr64(v, d, 32);
+    add64(v, c, v[2 * d], v[2 * d + 1]);
+    xor64(v, b, c); rotr64(v, b, 24);
+    add64(v, a, v[2 * b], v[2 * b + 1]); add64(v, a, m[2 * y], m[2 * y + 1]);
+    xor64(v, d, a); rotr64(v, d, 16);
+    add64(v, c, v[2 * d], v[2 * d + 1]);
+    xor64(v, b, c); rotr64(v, b, 63);
+}
+
+class Blake2b {
+    constructor(outlen) {
+        this.outlen = outlen;
+        this.h = new Uint32Array(16);
+        for (let i = 0; i < 16; i++) this.h[i] = BLAKE2B_IV[i];
+        this.h[0] ^= 0x01010000 ^ outlen;
+        this.t0 = 0; this.t1 = 0;
+        this.buf = new Uint8Array(128);
+        this.buflen = 0;
+    }
+    _inc(n) {
+        const old = this.t0;
+        this.t0 = (this.t0 + n) >>> 0;
+        if ((this.t0 >>> 0) < (old >>> 0)) this.t1 = (this.t1 + 1) >>> 0;
+    }
+    _compress(last) {
+        const v = new Uint32Array(32);
+        const m = new Uint32Array(32);
+        const b = this.buf;
+        for (let i = 0; i < 16; i++) {
+            m[2 * i] = (b[i * 8] | (b[i * 8 + 1] << 8) | (b[i * 8 + 2] << 16) | (b[i * 8 + 3] << 24)) >>> 0;
+            m[2 * i + 1] = (b[i * 8 + 4] | (b[i * 8 + 5] << 8) | (b[i * 8 + 6] << 16) | (b[i * 8 + 7] << 24)) >>> 0;
+        }
+        for (let i = 0; i < 16; i++) v[i] = this.h[i];
+        for (let i = 0; i < 16; i++) v[16 + i] = BLAKE2B_IV[i];
+        v[24] = (v[24] ^ this.t0) >>> 0; v[25] = (v[25] ^ this.t1) >>> 0;
+        if (last) { v[28] = (v[28] ^ 0xffffffff) >>> 0; v[29] = (v[29] ^ 0xffffffff) >>> 0; }
+        for (let r = 0; r < 12; r++) {
+            bG(v, m, r, 0, 0, 4, 8, 12);
+            bG(v, m, r, 1, 1, 5, 9, 13);
+            bG(v, m, r, 2, 2, 6, 10, 14);
+            bG(v, m, r, 3, 3, 7, 11, 15);
+            bG(v, m, r, 4, 0, 5, 10, 15);
+            bG(v, m, r, 5, 1, 6, 11, 12);
+            bG(v, m, r, 6, 2, 7, 8, 13);
+            bG(v, m, r, 7, 3, 4, 9, 14);
+        }
+        for (let i = 0; i < 16; i++) this.h[i] = (this.h[i] ^ v[i] ^ v[16 + i]) >>> 0;
+    }
+    update(data) {
+        for (let i = 0; i < data.length; i++) {
+            if (this.buflen === 128) { this._inc(128); this._compress(false); this.buflen = 0; }
+            this.buf[this.buflen++] = data[i];
+        }
+        return this;
+    }
+    digest() {
+        this._inc(this.buflen);
+        for (let i = this.buflen; i < 128; i++) this.buf[i] = 0;
+        this._compress(true);
+        const out = new Uint8Array(this.outlen);
+        for (let i = 0; i < this.outlen; i++) out[i] = (this.h[i >> 2] >>> (8 * (i & 3))) & 0xff;
+        return out;
+    }
+}
+
+function blake2b(data, outlen = 64) {
+    return new Blake2b(outlen).update(data).digest();
+}
+
+function le32(n) {
+    return new Uint8Array([n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff]);
+}
+
+function concatU8(arrays) {
+    let len = 0;
+    for (const a of arrays) len += a.length;
+    const out = new Uint8Array(len);
+    let off = 0;
+    for (const a of arrays) { out.set(a, off); off += a.length; }
+    return out;
+}
+
+function hPrime(outlen, input) {
+    if (outlen <= 64) return blake2b(concatU8([le32(outlen), input]), outlen);
+    const r = Math.ceil(outlen / 32) - 2;
+    const out = new Uint8Array(outlen);
+    let v = blake2b(concatU8([le32(outlen), input]), 64);
+    out.set(v.subarray(0, 32), 0);
+    let pos = 32;
+    for (let i = 2; i <= r; i++) {
+        v = blake2b(v, 64);
+        out.set(v.subarray(0, 32), pos);
+        pos += 32;
+    }
+    const lastLen = outlen - 32 * r;
+    v = blake2b(v, lastLen);
+    out.set(v.subarray(0, lastLen), pos);
+    return out;
+}
+
+function mul32(a, b) {
+    const aLo = a & 0xffff, aHi = a >>> 16;
+    const bLo = b & 0xffff, bHi = b >>> 16;
+    const lo = aLo * bLo;
+    const mid = aHi * bLo + aLo * bHi;
+    const hi = aHi * bHi;
+    const midLo = (mid & 0xffff) * 0x10000;
+    const low = lo + midLo;
+    const carry = Math.floor(low / 0x100000000);
+    return { lo: low >>> 0, hi: (hi + Math.floor(mid / 0x10000) + carry) >>> 0 };
+}
+
+function fBlaMka(v, ai, bi) {
+    const al = v[2 * ai], bl = v[2 * bi];
+    const p = mul32(al, bl);
+    const plo = (p.lo << 1) >>> 0;
+    const phi = ((p.hi << 1) | (p.lo >>> 31)) >>> 0;
+    add64(v, ai, v[2 * bi], v[2 * bi + 1]);
+    add64(v, ai, plo, phi);
+}
+
+function aG(v, a, b, c, d) {
+    fBlaMka(v, a, b); xor64(v, d, a); rotr64(v, d, 32);
+    fBlaMka(v, c, d); xor64(v, b, c); rotr64(v, b, 24);
+    fBlaMka(v, a, b); xor64(v, d, a); rotr64(v, d, 16);
+    fBlaMka(v, c, d); xor64(v, b, c); rotr64(v, b, 63);
+}
+
+function permP(v, s) {
+    aG(v, s[0], s[4], s[8], s[12]);
+    aG(v, s[1], s[5], s[9], s[13]);
+    aG(v, s[2], s[6], s[10], s[14]);
+    aG(v, s[3], s[7], s[11], s[15]);
+    aG(v, s[0], s[5], s[10], s[15]);
+    aG(v, s[1], s[6], s[11], s[12]);
+    aG(v, s[2], s[7], s[8], s[13]);
+    aG(v, s[3], s[4], s[9], s[14]);
+}
+
+const ROW_SETS = [];
+const COL_SETS = [];
+for (let i = 0; i < 8; i++) {
+    const row = [];
+    for (let j = 0; j < 16; j++) row.push(i * 16 + j);
+    ROW_SETS.push(row);
+    const col = [];
+    for (let j = 0; j < 8; j++) { col.push(2 * i + 16 * j); col.push(2 * i + 16 * j + 1); }
+    COL_SETS.push(col);
+}
+
+function blkXor(dst, a, b) { for (let i = 0; i < 256; i++) dst[i] = (a[i] ^ b[i]) >>> 0; }
+
+function fillBlock(prev, ref, out, withXor) {
+    const R = new Uint32Array(256);
+    blkXor(R, prev, ref);
+    const Z = R.slice();
+    for (let i = 0; i < 8; i++) permP(Z, ROW_SETS[i]);
+    for (let i = 0; i < 8; i++) permP(Z, COL_SETS[i]);
+    if (withXor) for (let i = 0; i < 256; i++) out[i] = (Z[i] ^ R[i] ^ out[i]) >>> 0;
+    else for (let i = 0; i < 256; i++) out[i] = (Z[i] ^ R[i]) >>> 0;
+}
+
+function blockToBytes(block) {
+    const out = new Uint8Array(1024);
+    for (let i = 0; i < 256; i++) {
+        out[i * 4] = block[i] & 0xff;
+        out[i * 4 + 1] = (block[i] >>> 8) & 0xff;
+        out[i * 4 + 2] = (block[i] >>> 16) & 0xff;
+        out[i * 4 + 3] = (block[i] >>> 24) & 0xff;
+    }
+    return out;
+}
+function bytesToBlock(bytes) {
+    const b = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+        b[i] = (bytes[i * 4] | (bytes[i * 4 + 1] << 8) | (bytes[i * 4 + 2] << 16) | (bytes[i * 4 + 3] << 24)) >>> 0;
+    }
+    return b;
+}
+
+// type: 0=argon2d, 1=argon2i, 2=argon2id ; memory in KiB
+function argon2(password, salt, opts = {}) {
+    const type = opts.type ?? 2;
+    const iterations = opts.iterations ?? 3;
+    const mKiB = opts.memory ?? 32;
+    const lanes = opts.parallelism ?? 4;
+    const tagLength = opts.tagLength ?? 32;
+    const version = opts.version ?? 0x13;
+    const P = password instanceof Uint8Array ? password : new Uint8Array(password);
+    const S = salt instanceof Uint8Array ? salt : new Uint8Array(salt);
+    const K = opts.secret ? new Uint8Array(opts.secret) : new Uint8Array(0);
+    const X = opts.ad ? new Uint8Array(opts.ad) : new Uint8Array(0);
+
+    let memoryBlocks = Math.max(mKiB, 8 * lanes);
+    const segmentLength = Math.floor(memoryBlocks / (lanes * 4));
+    memoryBlocks = segmentLength * 4 * lanes;
+    const laneLength = segmentLength * 4;
+
+    const H0 = blake2b(concatU8([
+        le32(lanes), le32(tagLength), le32(mKiB), le32(iterations), le32(version), le32(type),
+        le32(P.length), P, le32(S.length), S, le32(K.length), K, le32(X.length), X,
+    ]), 64);
+
+    const B = new Array(memoryBlocks);
+    for (let lane = 0; lane < lanes; lane++) {
+        B[lane * laneLength + 0] = bytesToBlock(hPrime(1024, concatU8([H0, le32(0), le32(lane)])));
+        B[lane * laneLength + 1] = bytesToBlock(hPrime(1024, concatU8([H0, le32(1), le32(lane)])));
+    }
+
+    const addressBlock = new Uint32Array(256);
+    const inputBlock = new Uint32Array(256);
+    const zeroBlock = new Uint32Array(256);
+
+    for (let pass = 0; pass < iterations; pass++) {
+        for (let slice = 0; slice < 4; slice++) {
+            for (let lane = 0; lane < lanes; lane++) {
+                const dataIndependent = (type === 1) || (type === 2 && pass === 0 && slice < 2);
+                let addrIndex = 0;
+                if (dataIndependent) {
+                    inputBlock.fill(0);
+                    inputBlock[0] = pass >>> 0; inputBlock[1] = Math.floor(pass / 0x100000000);
+                    inputBlock[2] = lane >>> 0;
+                    inputBlock[4] = slice >>> 0;
+                    inputBlock[6] = memoryBlocks >>> 0;
+                    inputBlock[8] = iterations >>> 0;
+                    inputBlock[10] = type >>> 0;
+                }
+
+                const startIndex = (pass === 0 && slice === 0) ? 2 : 0;
+                let curOffset = lane * laneLength + slice * segmentLength + startIndex;
+                let prevOffset = (curOffset % laneLength === 0) ? curOffset + laneLength - 1 : curOffset - 1;
+
+                for (let index = startIndex; index < segmentLength; index++, curOffset++, prevOffset++) {
+                    if (curOffset % laneLength === 1) prevOffset = curOffset - 1;
+
+                    let J1, J2;
+                    if (dataIndependent) {
+                        if (addrIndex % 128 === 0) {
+                            inputBlock[12] = (inputBlock[12] + 1) >>> 0;
+                            if (inputBlock[12] === 0) inputBlock[13] = (inputBlock[13] + 1) >>> 0;
+                            fillBlock(zeroBlock, inputBlock, addressBlock, false);
+                            fillBlock(zeroBlock, addressBlock, addressBlock, false);
+                        }
+                        const w = addrIndex % 128;
+                        J1 = addressBlock[2 * w] >>> 0; J2 = addressBlock[2 * w + 1] >>> 0;
+                        addrIndex++;
+                    } else {
+                        J1 = B[prevOffset][0] >>> 0; J2 = B[prevOffset][1] >>> 0;
+                    }
+
+                    const refLane = (pass === 0 && slice === 0) ? lane : (J2 % lanes);
+
+                    let refAreaSize;
+                    if (pass === 0) {
+                        if (slice === 0) refAreaSize = index - 1;
+                        else if (refLane === lane) refAreaSize = slice * segmentLength + index - 1;
+                        else refAreaSize = slice * segmentLength + (index === 0 ? -1 : 0);
+                    } else {
+                        if (refLane === lane) refAreaSize = laneLength - segmentLength + index - 1;
+                        else refAreaSize = laneLength - segmentLength + (index === 0 ? -1 : 0);
+                    }
+
+                    const x = mul32(J1, J1).hi;
+                    const y = mul32(refAreaSize >>> 0, x).hi;
+                    const relPos = refAreaSize - 1 - y;
+
+                    let startPos = 0;
+                    if (pass !== 0 && slice !== 3) startPos = (slice + 1) * segmentLength;
+                    const refIndex = (startPos + relPos) % laneLength;
+                    const refOffset = refLane * laneLength + refIndex;
+
+                    if (!B[curOffset]) B[curOffset] = new Uint32Array(256);
+                    fillBlock(B[prevOffset], B[refOffset], B[curOffset], pass !== 0);
+                }
+            }
+        }
+    }
+
+    const final = B[laneLength - 1].slice();
+    for (let lane = 1; lane < lanes; lane++) {
+        const blk = B[lane * laneLength + laneLength - 1];
+        for (let i = 0; i < 256; i++) final[i] ^= blk[i];
+    }
+    return hPrime(tagLength, blockToBytes(final));
+}
+
+// ============================================================
+// Bitwarden crypto helpers (WebCrypto + the Argon2 above)
+// ============================================================
+
+const TE = new TextEncoder();
+const TD = new TextDecoder();
+
+function b64ToBytes(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+}
+function bytesToB64(bytes) {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+}
+function ctEqual(a, b) {
+    if (a.length !== b.length) return false;
+    let r = 0;
+    for (let i = 0; i < a.length; i++) r |= a[i] ^ b[i];
+    return r === 0;
+}
+
+async function sha256(bytes) {
+    return new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+}
+
+async function pbkdf2(password, salt, iterations, length = 32) {
+    const key = await crypto.subtle.importKey('raw', password, 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, key, length * 8);
+    return new Uint8Array(bits);
+}
+
+async function hmacSha256(keyBytes, data) {
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    return new Uint8Array(await crypto.subtle.sign('HMAC', key, data));
+}
+
+// HKDF-Expand only (RFC 5869); the master key is used directly as PRK.
+async function hkdfExpand(prk, info, length) {
+    const infoBytes = typeof info === 'string' ? TE.encode(info) : info;
+    const hashLen = 32;
+    const n = Math.ceil(length / hashLen);
+    const out = new Uint8Array(n * hashLen);
+    let prev = new Uint8Array(0);
+    for (let i = 1; i <= n; i++) {
+        prev = await hmacSha256(prk, concatU8([prev, infoBytes, new Uint8Array([i])]));
+        out.set(prev, (i - 1) * hashLen);
+    }
+    return out.slice(0, length);
+}
+
+async function aesCbcDecrypt(keyBytes, iv, data) {
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CBC' }, false, ['decrypt']);
+    return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, key, data));
+}
+
+function parseCipherString(str) {
+    if (!str) return null;
+    let type = 0, rest = str;
+    const m = /^(\d+)\.(.+)$/s.exec(str);
+    if (m) { type = parseInt(m[1], 10); rest = m[2]; }
+    return { type, parts: rest.split('|') };
+}
+
+// Decrypt an AES-CBC(+HMAC) CipherString with a symmetric key {enc, mac}.
+async function decryptSym(str, encKey, macKey) {
+    const cs = parseCipherString(str);
+    if (!cs) return new Uint8Array(0);
+    let ivB64, ctB64, macB64;
+    if (cs.type === 0) { ivB64 = cs.parts[0]; ctB64 = cs.parts[1]; }
+    else if (cs.type === 1 || cs.type === 2) { ivB64 = cs.parts[0]; ctB64 = cs.parts[1]; macB64 = cs.parts[2]; }
+    else throw new Error('UNSUPPORTED_CIPHER_TYPE_' + cs.type);
+    const iv = b64ToBytes(ivB64), ct = b64ToBytes(ctB64);
+    if (macKey && macB64) {
+        const expected = await hmacSha256(macKey, concatU8([iv, ct]));
+        if (!ctEqual(expected, b64ToBytes(macB64))) throw new Error('MAC_FAILED');
+    }
+    return aesCbcDecrypt(encKey, iv, ct);
+}
+
+async function decryptSymToString(str, encKey, macKey) {
+    if (!str) return '';
+    return TD.decode(await decryptSym(str, encKey, macKey));
+}
+
+// Decrypt the protected user key with the master key.
+async function decryptUserKey(protectedKeyStr, masterKey) {
+    const cs = parseCipherString(protectedKeyStr);
+    let enc, mac;
+    if (cs.type === 0) { enc = masterKey; mac = null; }
+    else { enc = await hkdfExpand(masterKey, 'enc', 32); mac = await hkdfExpand(masterKey, 'mac', 32); }
+    const full = await decryptSym(protectedKeyStr, enc, mac);
+    if (full.length === 64) return { enc: full.slice(0, 32), mac: full.slice(32, 64) };
+    if (full.length === 32) return { enc: full, mac: null };
+    throw new Error('BAD_USER_KEY_LENGTH_' + full.length);
+}
+
+// RSA-OAEP decrypt (org keys / private key payloads).
+async function rsaDecrypt(str, privKeyPkcs8) {
+    const cs = parseCipherString(str);
+    const hash = cs.type === 4 ? 'SHA-1' : 'SHA-256';
+    const key = await crypto.subtle.importKey('pkcs8', privKeyPkcs8, { name: 'RSA-OAEP', hash }, false, ['decrypt']);
+    const ct = b64ToBytes(cs.parts[0]);
+    return new Uint8Array(await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, key, ct));
+}
+
+async function deriveMasterKey(password, email, kdf) {
+    const pw = TE.encode(password);
+    const emailNorm = TE.encode((email || '').trim().toLowerCase());
+    if (kdf.type === 1) {
+        const salt = await sha256(emailNorm);
+        return argon2(pw, salt, {
+            type: 2,
+            iterations: kdf.iterations,
+            memory: kdf.memory * 1024, // MiB -> KiB
+            parallelism: kdf.parallelism,
+            tagLength: 32,
+        });
+    }
+    return pbkdf2(pw, emailNorm, kdf.iterations, 32);
+}
+
+function field(obj, name) {
+    if (obj == null) return undefined;
+    if (obj[name] !== undefined) return obj[name];
+    const cap = name[0].toUpperCase() + name.slice(1);
+    return obj[cap];
+}
+
+// ============================================================
+// UI icons
+// ============================================================
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const ICONS = {
@@ -20,6 +506,7 @@ const ICONS = {
     'alert-triangle': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
     'alert-circle': '<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>',
     'lock': '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    'settings': '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
     'refresh-cw': '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/>',
     'search': '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     'loader-2': '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
@@ -113,10 +600,14 @@ async function generateTotp(secret, digits = 6, period = 30) {
     return code.toString().padStart(digits, '0');
 }
 
-// ---
+// ============================================================
+// Plugin
+// ============================================================
 
 class BitwardenPlugin extends Plugin {
-    sessionToken = null;
+    userKey = null;   // { enc: Uint8Array, mac: Uint8Array|null }
+    orgKeys = {};
+    vault = null;     // { items: [], folders: [] }
 
     async onload() {
         await this.loadSettings();
@@ -131,7 +622,9 @@ class BitwardenPlugin extends Plugin {
     }
 
     async onunload() {
-        this.sessionToken = null;
+        this.userKey = null;
+        this.orgKeys = {};
+        this.vault = null;
         this.app.workspace.detachLeavesOfType(VIEW_TYPE);
     }
 
@@ -145,78 +638,255 @@ class BitwardenPlugin extends Plugin {
         if (leaf) workspace.revealLeaf(leaf);
     }
 
-    async execBw(args) {
-        try {
-            const { stdout } = await execFileAsync(this.settings.bwPath || 'bw', args);
-            return stdout.trim();
-        } catch (err) {
-            if (err.code === 'ENOENT') throw new Error('BW_NOT_FOUND');
-            const text = (err.stderr || '') + (err.stdout || '') + (err.message || '');
-            if (
-                text.includes('Invalid refresh token') ||
-                text.includes('Unable to refresh login credentials')
-            ) {
-                throw new Error('REFRESH_TOKEN_INVALID');
-            }
-            if (
-                text.includes('mac failed') ||
-                text.includes('Session key is invalid') ||
-                text.includes('You are not logged in') ||
-                text.includes('Not logged in')
-            ) {
-                throw new Error('SESSION_INVALID');
-            }
-            throw err;
+    // --- endpoints ---
+
+    endpoints() {
+        const r = this.settings.region;
+        if (r === 'eu') {
+            return { identity: 'https://identity.bitwarden.eu', api: 'https://api.bitwarden.eu' };
         }
+        if (r === 'self') {
+            const base = (this.settings.serverUrl || '').replace(/\/+$/, '');
+            return { identity: `${base}/identity`, api: `${base}/api` };
+        }
+        return { identity: 'https://identity.bitwarden.com', api: 'https://api.bitwarden.com' };
     }
 
-    async getStatus() {
-        try {
-            return JSON.parse(await this.execBw(['status']));
-        } catch (err) {
-            if (err.message === 'BW_NOT_FOUND') return { status: 'not_found' };
-            if (err.message === 'REFRESH_TOKEN_INVALID') return { status: 'refresh_token_invalid' };
-            return { status: 'error' };
+    isConfigured() {
+        if (!this.settings.email || !this.settings.clientId || !this.settings.clientSecret) return false;
+        if (this.settings.region === 'self' && !this.settings.serverUrl) return false;
+        return true;
+    }
+
+    get isUnlocked() { return !!this.userKey; }
+
+    // --- API ---
+
+    async prelogin() {
+        const body = JSON.stringify({ email: this.settings.email });
+        const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+        const { identity, api } = this.endpoints();
+        for (const url of [`${identity}/accounts/prelogin`, `${api}/accounts/prelogin`]) {
+            const res = await requestUrl({ url, method: 'POST', headers, body, throw: false });
+            if (res.status === 200) {
+                const j = res.json;
+                return {
+                    type: field(j, 'kdf') ?? 0,
+                    iterations: field(j, 'kdfIterations') ?? 600000,
+                    memory: field(j, 'kdfMemory') ?? 64,
+                    parallelism: field(j, 'kdfParallelism') ?? 4,
+                };
+            }
+            if (res.status !== 404 && res.status !== 405) {
+                throw new Error('PRELOGIN_FAILED_' + res.status);
+            }
         }
+        throw new Error('PRELOGIN_FAILED');
+    }
+
+    async login() {
+        const { identity } = this.endpoints();
+        const params = new URLSearchParams();
+        params.set('grant_type', 'client_credentials');
+        params.set('scope', 'api');
+        params.set('client_id', this.settings.clientId);
+        params.set('client_secret', this.settings.clientSecret);
+        params.set('deviceType', '14');
+        params.set('deviceIdentifier', this.settings.deviceId);
+        params.set('deviceName', 'obsidian');
+        const res = await requestUrl({
+            url: `${identity}/connect/token`,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+                'Accept': 'application/json',
+                'Device-Type': '14',
+            },
+            body: params.toString(),
+            throw: false,
+        });
+        if (res.status !== 200) throw new Error('LOGIN_FAILED_' + res.status);
+        const j = res.json;
+        this.settings.accessToken = j.access_token;
+        this.settings.tokenExpiresAt = Date.now() + ((j.expires_in || 3600) * 1000);
+        await this.saveSettings();
+        return j.access_token;
+    }
+
+    async ensureToken() {
+        if (this.settings.accessToken && Date.now() < this.settings.tokenExpiresAt - 60000) {
+            return this.settings.accessToken;
+        }
+        return this.login();
+    }
+
+    async syncRaw() {
+        const { api } = this.endpoints();
+        const doFetch = async (token) => requestUrl({
+            url: `${api}/sync?excludeDomains=true`,
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
+            throw: false,
+        });
+        let token = await this.ensureToken();
+        let res = await doFetch(token);
+        if (res.status === 401) {
+            this.settings.accessToken = null;
+            this.settings.tokenExpiresAt = 0;
+            token = await this.login();
+            res = await doFetch(token);
+        }
+        if (res.status !== 200) throw new Error('SYNC_FAILED_' + res.status);
+        return res.json;
+    }
+
+    // --- vault ---
+
+    async buildOrgKeys(profile) {
+        const orgKeys = {};
+        const orgs = field(profile, 'organizations') || [];
+        const privEnc = field(profile, 'privateKey');
+        if (!orgs.length || !privEnc) return orgKeys;
+        const privPkcs8 = await decryptSym(privEnc, this.userKey.enc, this.userKey.mac);
+        for (const org of orgs) {
+            const id = field(org, 'id');
+            const keyStr = field(org, 'key');
+            if (!id || !keyStr) continue;
+            try {
+                const raw = await rsaDecrypt(keyStr, privPkcs8);
+                orgKeys[id] = raw.length === 64
+                    ? { enc: raw.slice(0, 32), mac: raw.slice(32, 64) }
+                    : { enc: raw, mac: null };
+            } catch { /* skip org we cannot decrypt */ }
+        }
+        return orgKeys;
+    }
+
+    keyForCipher(cipher) {
+        const orgId = field(cipher, 'organizationId');
+        if (orgId && this.orgKeys[orgId]) return this.orgKeys[orgId];
+        return this.userKey;
+    }
+
+    async decryptCipher(c) {
+        const key = this.keyForCipher(c);
+        const dec = (s) => decryptSymToString(s, key.enc, key.mac);
+        const type = field(c, 'type');
+        const item = {
+            id: field(c, 'id'),
+            type,
+            favorite: !!field(c, 'favorite'),
+            folderId: field(c, 'folderId') || null,
+            name: await dec(field(c, 'name')),
+        };
+        const notes = field(c, 'notes');
+        if (notes) item.notes = await dec(notes);
+
+        if (type === 1) {
+            const login = field(c, 'login');
+            if (login) {
+                const urisRaw = field(login, 'uris') || [];
+                const uris = [];
+                for (const u of urisRaw) uris.push({ uri: await dec(field(u, 'uri')) });
+                item.login = {
+                    username: field(login, 'username') ? await dec(field(login, 'username')) : '',
+                    password: field(login, 'password') ? await dec(field(login, 'password')) : '',
+                    totp: field(login, 'totp') ? await dec(field(login, 'totp')) : null,
+                    uris,
+                };
+            }
+        } else if (type === 3) {
+            const card = field(c, 'card');
+            if (card) {
+                item.card = {
+                    cardholderName: field(card, 'cardholderName') ? await dec(field(card, 'cardholderName')) : '',
+                    number: field(card, 'number') ? await dec(field(card, 'number')) : '',
+                    expMonth: field(card, 'expMonth') ? await dec(field(card, 'expMonth')) : '',
+                    expYear: field(card, 'expYear') ? await dec(field(card, 'expYear')) : '',
+                    code: field(card, 'code') ? await dec(field(card, 'code')) : '',
+                    brand: field(card, 'brand') ? await dec(field(card, 'brand')) : '',
+                };
+            }
+        }
+        return item;
+    }
+
+    async decryptVault(sync) {
+        const ciphers = field(sync, 'ciphers') || [];
+        const folders = field(sync, 'folders') || [];
+        const items = [];
+        for (const c of ciphers) {
+            if (field(c, 'deletedDate')) continue; // skip trashed
+            try { items.push(await this.decryptCipher(c)); } catch { /* skip undecryptable */ }
+        }
+        const decFolders = [];
+        for (const f of folders) {
+            const id = field(f, 'id');
+            if (!id) continue; // null id = "no folder" placeholder
+            decFolders.push({ id, name: await decryptSymToString(field(f, 'name'), this.userKey.enc, this.userKey.mac) });
+        }
+        return { items, folders: decFolders };
+    }
+
+    async sync() {
+        if (!this.userKey) throw new Error('LOCKED');
+        const raw = await this.syncRaw();
+        const profile = field(raw, 'profile');
+        this.orgKeys = await this.buildOrgKeys(profile);
+        this.vault = await this.decryptVault(raw);
     }
 
     async unlock(password) {
-        const out = await this.execBw(['unlock', '--raw', password]);
-        this.sessionToken = out;
-        this.settings.sessionToken = out;
+        const kdf = await this.prelogin();
+        const raw = await this.syncRaw();
+        const profile = field(raw, 'profile');
+        const masterKey = await deriveMasterKey(password, this.settings.email, kdf);
+        const userKey = await decryptUserKey(field(profile, 'key'), masterKey); // throws MAC_FAILED on wrong password
+        this.userKey = userKey;
+        this.orgKeys = await this.buildOrgKeys(profile);
+        this.vault = await this.decryptVault(raw);
+        const macPart = userKey.mac || new Uint8Array(0);
+        this.settings.userKeyB64 = bytesToB64(concatU8([userKey.enc, macPart]));
         await this.saveSettings();
     }
 
     async lock() {
-        try { await this.execBw(['lock']); } catch {}
-        this.sessionToken = null;
-        this.settings.sessionToken = null;
+        this.userKey = null;
+        this.orgKeys = {};
+        this.vault = null;
+        this.settings.userKeyB64 = null;
+        this.settings.accessToken = null;
+        this.settings.tokenExpiresAt = 0;
         await this.saveSettings();
     }
 
-    async sync() {
-        await this.execBw(['sync', '--session', this.sessionToken]);
+    async ensureVault() {
+        if (!this.vault) await this.sync();
+        return this.vault;
     }
 
-    async listItems(search = '') {
-        const args = ['list', 'items', '--session', this.sessionToken];
-        if (search) args.push('--search', search);
-        const out = await this.execBw(args);
-        if (!out) return [];
-        const parsed = JSON.parse(out);
-        return Array.isArray(parsed) ? parsed : [];
+    async listItems() {
+        return (await this.ensureVault()).items;
     }
 
     async listFolders() {
-        const out = await this.execBw(['list', 'folders', '--session', this.sessionToken]);
-        if (!out) return [];
-        const parsed = JSON.parse(out);
-        return Array.isArray(parsed) ? parsed : [];
+        return (await this.ensureVault()).folders;
     }
 
     async loadSettings() {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-        this.sessionToken = this.settings.sessionToken || null;
+        if (!this.settings.deviceId) {
+            this.settings.deviceId = crypto.randomUUID();
+            await this.saveSettings();
+        }
+        if (this.settings.userKeyB64) {
+            const raw = b64ToBytes(this.settings.userKeyB64);
+            this.userKey = raw.length === 64
+                ? { enc: raw.slice(0, 32), mac: raw.slice(32, 64) }
+                : { enc: raw.slice(0, 32), mac: null };
+        } else {
+            this.userKey = null;
+        }
     }
 
     async saveSettings() {
@@ -274,7 +944,7 @@ class BitwardenView extends ItemView {
         this.searchBar = null;
         this.searchInput = null;
         this.searchTimer = null;
-        this.folderNav = null; // null = folder home, { id, name } = inside a folder
+        this.folderNav = null;
         this.itemsCache = null;
         this.foldersCache = null;
     }
@@ -292,43 +962,32 @@ class BitwardenView extends ItemView {
         container.empty();
         container.addClass('bw-panel');
 
-        if (this.plugin.sessionToken) {
+        if (this.plugin.isUnlocked) {
             await this.renderUnlocked(container);
         } else {
-            const status = await this.plugin.getStatus();
-            this.renderLockScreen(container, status);
+            this.renderLockScreen(container);
         }
     }
 
-    renderLockScreen(container, status) {
+    renderLockScreen(container) {
         const screen = container.createDiv('bw-lock-screen');
+        const configured = this.plugin.isConfigured();
 
         const iconEl = screen.createDiv('bw-lock-icon');
-        setIcon(iconEl, status.status === 'not_found' ? 'alert-triangle' : 'lock');
+        setIcon(iconEl, configured ? 'lock' : 'settings');
 
         screen.createEl('h3', { text: 'Bitwarden', cls: 'bw-lock-title' });
 
-        if (status.status === 'not_found') {
+        if (!configured) {
             screen.createEl('p', {
-                text: 'Bitwarden CLIが見つかりません。インストール後、設定でパスを指定してください。',
+                text: 'APIキーが未設定です。設定でメールアドレス・client_id・client_secret（とサーバー）を入力してください。',
+                cls: 'bw-hint-text',
+            });
+            screen.createEl('p', {
+                text: 'APIキーはWeb Vaultの「アカウント設定 → セキュリティ → キー → APIキー」で取得できます。',
                 cls: 'bw-hint-text',
             });
             return;
-        }
-
-        if (status.status === 'refresh_token_invalid') {
-            screen.createEl('p', {
-                text: 'ログイン情報が期限切れです。ターミナルで bw logout → bw login を実行してください。',
-                cls: 'bw-hint-text bw-hint-warning',
-            });
-            return;
-        }
-
-        if (status.status === 'unauthenticated') {
-            screen.createEl('p', {
-                text: 'ターミナルで bw login を実行してログインしてください。',
-                cls: 'bw-hint-text',
-            });
         }
 
         const form = screen.createDiv('bw-unlock-form');
@@ -352,8 +1011,8 @@ class BitwardenView extends ItemView {
             try {
                 await this.plugin.unlock(pw);
                 await this.render();
-            } catch {
-                errorEl.textContent = 'アンロックに失敗しました。パスワードを確認してください。';
+            } catch (err) {
+                errorEl.textContent = this.unlockErrorMessage(err);
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'アンロック';
             }
@@ -362,6 +1021,20 @@ class BitwardenView extends ItemView {
         submitBtn.addEventListener('click', doUnlock);
         passwordInput.addEventListener('keydown', e => { if (e.key === 'Enter') doUnlock(); });
         setTimeout(() => passwordInput.focus(), 50);
+    }
+
+    unlockErrorMessage(err) {
+        const m = err && err.message ? err.message : '';
+        if (m === 'MAC_FAILED' || m.startsWith('BAD_USER_KEY')) {
+            return 'アンロックに失敗しました。パスワードを確認してください。';
+        }
+        if (m.startsWith('LOGIN_FAILED')) {
+            return 'ログインに失敗しました。APIキー（client_id / client_secret）を確認してください。';
+        }
+        if (m.startsWith('PRELOGIN_FAILED') || m.startsWith('SYNC_FAILED')) {
+            return 'サーバーに接続できませんでした。サーバーURLとネットワークを確認してください。';
+        }
+        return '不明なエラーが発生しました: ' + m;
     }
 
     async renderUnlocked(container) {
@@ -449,7 +1122,7 @@ class BitwardenView extends ItemView {
 
     async getItems(query = '') {
         if (!this.itemsCache) {
-            this.itemsCache = await this.plugin.listItems('');
+            this.itemsCache = await this.plugin.listItems();
         }
         if (!query) return this.itemsCache;
         const q = query.toLowerCase();
@@ -486,7 +1159,6 @@ class BitwardenView extends ItemView {
                 if (this.plugin.settings.viewMode === 'folder' && this.folderNav) {
                     this.renderFolderBackButton();
 
-                    // 子フォルダを先に表示
                     const allFolders = await this.getFolders();
                     const prefix = this.folderNav.name + '/';
                     const childFolders = allFolders
@@ -501,7 +1173,6 @@ class BitwardenView extends ItemView {
                         this.renderFolderTree(this.listContainer, childTree, 0);
                     }
 
-                    // アイテムを後に表示
                     const folderItems = items.filter(i => (i.folderId || null) === this.folderNav.id);
                     if (!folderItems.length && !childTree.length) {
                         const emptyEl = this.listContainer.createDiv('bw-empty');
@@ -521,17 +1192,11 @@ class BitwardenView extends ItemView {
                 }
             }
         } catch (err) {
-            if (err.message === 'SESSION_INVALID' || err.message === 'REFRESH_TOKEN_INVALID') {
-                this.plugin.sessionToken = null;
-                this.plugin.settings.sessionToken = null;
-                await this.plugin.saveSettings();
-                await this.render();
-                return;
-            }
+            const m = err && err.message ? err.message : '';
             this.listContainer.empty();
             const errEl = this.listContainer.createDiv('bw-error-state');
             setIcon(errEl.createSpan('bw-error-icon'), 'alert-circle');
-            errEl.createEl('p', { text: err.message || '不明なエラーが発生しました' });
+            errEl.createEl('p', { text: this.unlockErrorMessage(err) || m || '不明なエラーが発生しました' });
         }
     }
 
@@ -877,15 +1542,80 @@ class BitwardenSettingTab extends PluginSettingTab {
         containerEl.empty();
         containerEl.createEl('h2', { text: 'Bitwarden 設定' });
 
+        containerEl.createEl('h3', { text: 'アカウント' });
+
         new Setting(containerEl)
-            .setName('Bitwarden CLI パス')
-            .setDesc('bw コマンドのパス。PATHが通っていない場合はフルパスを入力してください。')
-            .addText(text => text
-                .setPlaceholder('bw')
-                .setValue(this.plugin.settings.bwPath)
+            .setName('サーバー')
+            .setDesc('利用しているBitwardenサーバー。セルフホストの場合は「セルフホスト」を選び、URLを入力してください。')
+            .addDropdown(drop => drop
+                .addOption('us', '米国 (bitwarden.com)')
+                .addOption('eu', 'EU (bitwarden.eu)')
+                .addOption('self', 'セルフホスト')
+                .setValue(this.plugin.settings.region)
                 .onChange(async value => {
-                    this.plugin.settings.bwPath = value.trim() || 'bw';
+                    this.plugin.settings.region = value;
                     await this.plugin.saveSettings();
+                    this.display();
+                }));
+
+        if (this.plugin.settings.region === 'self') {
+            new Setting(containerEl)
+                .setName('サーバーURL')
+                .setDesc('セルフホストのベースURL（例: https://vault.example.com）。/identity と /api を自動付与します。')
+                .addText(text => text
+                    .setPlaceholder('https://vault.example.com')
+                    .setValue(this.plugin.settings.serverUrl)
+                    .onChange(async value => {
+                        this.plugin.settings.serverUrl = value.trim();
+                        await this.plugin.saveSettings();
+                    }));
+        }
+
+        new Setting(containerEl)
+            .setName('メールアドレス')
+            .setDesc('Bitwardenアカウントのメールアドレス。Vault復号の鍵導出に使用します。')
+            .addText(text => text
+                .setPlaceholder('you@example.com')
+                .setValue(this.plugin.settings.email)
+                .onChange(async value => {
+                    this.plugin.settings.email = value.trim();
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('client_id')
+            .setDesc('個人APIキーの client_id（user.xxxx 形式）。Web Vaultの「セキュリティ → キー → APIキー」で取得。')
+            .addText(text => text
+                .setPlaceholder('user.xxxxxxxx-xxxx-...')
+                .setValue(this.plugin.settings.clientId)
+                .onChange(async value => {
+                    this.plugin.settings.clientId = value.trim();
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('client_secret')
+            .setDesc('個人APIキーの client_secret。')
+            .addText(text => {
+                text.inputEl.type = 'password';
+                text
+                    .setPlaceholder('client_secret')
+                    .setValue(this.plugin.settings.clientSecret)
+                    .onChange(async value => {
+                        this.plugin.settings.clientSecret = value.trim();
+                        await this.plugin.saveSettings();
+                    });
+            });
+
+        new Setting(containerEl)
+            .setName('認証情報をクリア')
+            .setDesc('保存されたセッション（アクセストークン・Vault鍵）を消去してロックします。APIキーやメールは保持されます。')
+            .addButton(btn => btn
+                .setButtonText('ロック / セッション消去')
+                .setWarning()
+                .onClick(async () => {
+                    await this.plugin.lock();
+                    new Notice('Bitwarden: ロックしました');
                 }));
 
         containerEl.createEl('h3', { text: '表示' });
