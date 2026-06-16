@@ -1496,7 +1496,7 @@ class BitwardenItemModal extends Modal {
                 const toggle = section.createEl('button', { cls: 'bw-urls-toggle' });
                 const toggleIcon = toggle.createSpan({ cls: 'bw-urls-toggle-icon' });
                 setIcon(toggleIcon, 'chevron-right');
-                toggle.createSpan({ text: `URL (${urlCount})` });
+                toggle.createSpan({ text: `URL 一覧 (${urlCount})` });
                 const list = section.createDiv('bw-urls-list');
                 list.style.display = 'none';
                 toggle.addEventListener('click', () => {
