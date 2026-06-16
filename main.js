@@ -1126,11 +1126,47 @@ class BitwardenView extends ItemView {
         }
         if (!query) return this.itemsCache;
         const q = query.toLowerCase();
-        return this.itemsCache.filter(item =>
-            item.name?.toLowerCase().includes(q) ||
-            item.login?.username?.toLowerCase().includes(q) ||
-            item.login?.uris?.[0]?.uri?.toLowerCase().includes(q)
-        );
+        const hasWildcard = q.includes('*');
+
+        const matchText = (text) => {
+            if (!text) return false;
+            const t = text.toLowerCase();
+            if (hasWildcard) {
+                const pattern = q.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+                try { return new RegExp(pattern).test(t); } catch { return false; }
+            }
+            return t.includes(q);
+        };
+
+        const matchNotes = (text) => {
+            if (!text) return false;
+            const t = text.toLowerCase();
+            if (hasWildcard) {
+                const pattern = q.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+                try { return new RegExp(pattern).test(t); } catch { return false; }
+            }
+            const escaped = q.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+            try { return new RegExp(`(?:^|[\\s,.]|${'\\b'})${escaped}(?=[\\s,.]|${'\\b'}|$)`).test(t); } catch { return false; }
+        };
+
+        return this.itemsCache.filter(item => {
+            if (matchText(item.name)) return true;
+            if (item.type === 1 && matchText(item.login?.username)) return true;
+            if (item.type === 3) {
+                if (matchText(item.card?.brand)) return true;
+                const last4 = item.card?.number?.replace(/[\s-]/g, '').slice(-4);
+                if (last4 && matchText(last4)) return true;
+            }
+            if (item.type === 1 && item.login?.uris) {
+                for (const u of item.login.uris) {
+                    const host = extractDomain(u.uri);
+                    if (host && matchText(host)) return true;
+                    if (matchText(u.uri)) return true;
+                }
+            }
+            if (matchNotes(item.notes)) return true;
+            return false;
+        });
     }
 
     async getFolders() {
@@ -1149,8 +1185,20 @@ class BitwardenView extends ItemView {
 
         try {
             if (this.plugin.settings.viewMode === 'folder' && !this.folderNav) {
-                if (this.searchBar) this.searchBar.style.display = 'none';
-                await this.loadFolderHome();
+                if (this.searchBar) this.searchBar.style.display = '';
+                if (query) {
+                    const items = await this.getItems(query);
+                    this.listContainer.empty();
+                    if (!items.length) {
+                        const emptyEl = this.listContainer.createDiv('bw-empty');
+                        setIcon(emptyEl.createSpan(), 'search');
+                        emptyEl.createSpan({ text: '見つかりません' });
+                        return;
+                    }
+                    this.renderByType(items);
+                } else {
+                    await this.loadFolderHome();
+                }
             } else {
                 if (this.searchBar) this.searchBar.style.display = '';
                 const items = await this.getItems(query);
