@@ -1405,11 +1405,25 @@ class BitwardenView extends ItemView {
             const domain = item.type === 1 ? extractDomain(item.login?.uris?.[0]?.uri) : null;
             if (domain && this.plugin.settings.useIcons) {
                 const server = this.plugin.settings.iconServer || 'https://icons.bitwarden.net';
+                const fallbacks = [
+                    `${server}/${domain}/icon.png`,
+                    `https://icons.duckduckgo.com/ip3/${domain}.ico`,
+                    `https://${domain}/favicon.ico`,
+                ];
+                let fallbackIndex = 0;
                 const img = itemIcon.createEl('img', {
                     cls: 'bw-site-icon',
-                    attr: { src: `${server}/${domain}/icon.png`, alt: '' },
+                    attr: { src: fallbacks[0], alt: '' },
                 });
-                img.addEventListener('error', () => { img.remove(); setIcon(itemIcon, typeIcon); });
+                img.addEventListener('error', () => {
+                    fallbackIndex++;
+                    if (fallbackIndex < fallbacks.length) {
+                        img.src = fallbacks[fallbackIndex];
+                    } else {
+                        img.remove();
+                        setIcon(itemIcon, typeIcon);
+                    }
+                });
             } else {
                 setIcon(itemIcon, typeIcon);
             }
