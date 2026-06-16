@@ -1221,7 +1221,7 @@ class BitwardenView extends ItemView {
         const tree = pruneEmptyFolderTree(buildFolderTree(folders), items);
         const folderHeader = this.listContainer.createDiv('bw-group-label');
         setIcon(folderHeader.createSpan('bw-group-icon'), 'folder');
-        folderHeader.createSpan({ text: 'フォルダ' });
+        folderHeader.createSpan({ text: 'フォルダ別' });
         this.renderFolderTree(this.listContainer, tree, 0, 0);
     }
 
