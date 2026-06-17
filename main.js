@@ -773,8 +773,8 @@ class BitwardenPlugin extends Plugin {
             if (sshKey) {
                 item.sshKey = {
                     privateKey: field(sshKey, 'privateKey') ? await dec(field(sshKey, 'privateKey')) : '',
-                    publicKey: field(sshKey, 'publicKey') ? await dec(field(sshKey, 'publicKey')) : '',
-                    keyFingerprint: field(sshKey, 'keyFingerprint') ? await dec(field(sshKey, 'keyFingerprint')) : '',
+                    publicKey: field(sshKey, 'publicKey') || '',
+                    keyFingerprint: field(sshKey, 'keyFingerprint') || '',
                 };
             }
         }
