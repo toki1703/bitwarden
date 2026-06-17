@@ -1040,7 +1040,7 @@ class BitwardenView extends ItemView {
             cls: 'bw-icon-btn',
             attr: { title: '同期', 'aria-label': '同期' },
         });
-        setIcon(syncBtn, 'refresh-cw');
+        setIcon(syncBtn.createSpan(), 'refresh-cw');
         syncBtn.addEventListener('click', async () => {
             syncBtn.disabled = true;
             syncBtn.addClass('bw-spinning');
@@ -1062,7 +1062,7 @@ class BitwardenView extends ItemView {
             cls: 'bw-icon-btn',
             attr: { title: 'ロック', 'aria-label': 'ロック' },
         });
-        setIcon(lockBtn, 'lock');
+        setIcon(lockBtn.createSpan(), 'lock');
         lockBtn.addEventListener('click', async () => {
             await this.plugin.lock();
             await this.render();
@@ -1076,7 +1076,7 @@ class BitwardenView extends ItemView {
                 'aria-label': 'ビュー切替',
             },
         });
-        setIcon(viewModeBtn, isFolder ? 'list' : 'folder');
+        setIcon(viewModeBtn.createSpan(), isFolder ? 'list' : 'folder');
         viewModeBtn.addEventListener('click', async () => {
             this.plugin.settings.viewMode = this.plugin.settings.viewMode === 'type' ? 'folder' : 'type';
             await this.plugin.saveSettings();
@@ -1316,7 +1316,7 @@ class BitwardenView extends ItemView {
             cls: 'bw-icon-btn',
             attr: { title: isNested ? '1つ上のフォルダに戻る' : 'フォルダ一覧に戻る', 'aria-label': '戻る' },
         });
-        setIcon(backBtn, 'arrow-left');
+        setIcon(backBtn.createSpan(), 'arrow-left');
         const displayName = segments[segments.length - 1];
         row.createSpan({ text: displayName, cls: 'bw-folder-current-name' });
         backBtn.addEventListener('click', async () => {
@@ -1424,7 +1424,7 @@ class BitwardenView extends ItemView {
                         cls: 'bw-copy-btn',
                         attr: { title: 'ユーザー名をコピー' },
                     });
-                    setIcon(btn, 'user');
+                    setIcon(btn.createSpan(), 'user');
                     btn.addEventListener('click', (e) => {
                         e.stopPropagation();
                         navigator.clipboard.writeText(item.login.username);
@@ -1437,7 +1437,7 @@ class BitwardenView extends ItemView {
                         cls: 'bw-copy-btn',
                         attr: { title: 'パスワードをコピー' },
                     });
-                    setIcon(btn, 'copy');
+                    setIcon(btn.createSpan(), 'copy');
                     btn.addEventListener('click', (e) => {
                         e.stopPropagation();
                         navigator.clipboard.writeText(item.login.password);
@@ -1450,7 +1450,7 @@ class BitwardenView extends ItemView {
                         cls: 'bw-copy-btn',
                         attr: { title: 'TOTPコードをコピー' },
                     });
-                    setIcon(btn, 'clock');
+                    setIcon(btn.createSpan(), 'clock');
                     btn.addEventListener('click', async (e) => {
                         e.stopPropagation();
                         const parsed = parseTotpUri(item.login.totp);
@@ -1508,7 +1508,7 @@ class BitwardenItemModal extends Modal {
                     const item = list.createDiv('bw-url-item');
                     item.createEl('span', { cls: 'bw-url-text', text: u.uri });
                     const copyBtn = item.createEl('button', { cls: 'bw-icon-btn', attr: { title: 'URLをコピー' } });
-                    setIcon(copyBtn, 'copy');
+                    setIcon(copyBtn.createSpan(), 'copy');
                     copyBtn.addEventListener('click', (e) => {
                         e.stopPropagation();
                         navigator.clipboard.writeText(u.uri);
@@ -1577,7 +1577,7 @@ class BitwardenItemModal extends Modal {
             cls: 'bw-icon-btn',
             attr: { title: 'TOTPコードをコピー' },
         });
-        setIcon(copyBtn, 'copy');
+        setIcon(copyBtn.createSpan(), 'copy');
 
         const gaugeTrack = box.createDiv('bw-totp-gauge');
         const gaugeFill = gaugeTrack.createDiv('bw-totp-gauge-fill');
@@ -1653,11 +1653,12 @@ class BitwardenItemModal extends Modal {
         if (masked) {
             valueEl.textContent = "•".repeat(value.length);
             const eyeBtn = valueArea.createEl('button', { cls: 'bw-icon-btn' });
-            setIcon(eyeBtn, 'eye');
+            const eyeIcon = eyeBtn.createSpan();
+            setIcon(eyeIcon, 'eye');
             eyeBtn.addEventListener('click', () => {
                 revealed = !revealed;
                 valueEl.textContent = revealed ? value : "•".repeat(value.length);
-                setIcon(eyeBtn, revealed ? 'eye-off' : 'eye');
+                setIcon(eyeIcon, revealed ? 'eye-off' : 'eye');
             });
         } else {
             valueEl.textContent = value;
@@ -1665,7 +1666,7 @@ class BitwardenItemModal extends Modal {
 
         if (copyable) {
             const copyBtn = valueArea.createEl('button', { cls: 'bw-icon-btn' });
-            setIcon(copyBtn, 'copy');
+            setIcon(copyBtn.createSpan(), 'copy');
             copyBtn.addEventListener('click', () => {
                 navigator.clipboard.writeText(value);
                 new Notice(`${label}をコピーしました`);
