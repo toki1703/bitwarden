@@ -444,6 +444,10 @@
     user-select: text;
 }
 
+.bw-field-value--multiline {
+    white-space: pre-wrap;
+}
+
 /* URL折り畳みセクション */
 .bw-urls-section {
     margin-bottom: 0.5rem;

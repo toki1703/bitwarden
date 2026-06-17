@@ -1555,7 +1555,7 @@ class BitwardenItemModal extends Modal {
             if (card.code) this.addField('CVV', card.code, { copyable: true, masked: false });
         }
 
-        if (notes) this.addField('メモ', notes);
+        if (notes) this.addField('メモ', notes, { multiline: true });
 
         const customFields = this.item.fields;
         if (customFields?.length) {
@@ -1663,13 +1663,13 @@ class BitwardenItemModal extends Modal {
 
     addField(label, value, opts = {}) {
         if (!value) return;
-        const { copyable = false, masked = false } = opts;
+        const { copyable = false, masked = false, multiline = false } = opts;
 
         const row = this.contentEl.createDiv('bw-field-row');
         row.createEl('label', { text: label, cls: 'bw-field-label' });
 
         const valueArea = row.createDiv('bw-field-value-area');
-        const valueEl = valueArea.createEl('span', { cls: 'bw-field-value' });
+        const valueEl = valueArea.createEl('span', { cls: multiline ? 'bw-field-value bw-field-value--multiline' : 'bw-field-value' });
 
         let revealed = false;
         if (masked) {
