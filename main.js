@@ -768,6 +768,15 @@ class BitwardenPlugin extends Plugin {
                     brand: field(card, 'brand') ? await dec(field(card, 'brand')) : '',
                 };
             }
+        } else if (type === 5) {
+            const sshKey = field(c, 'sshKey');
+            if (sshKey) {
+                item.sshKey = {
+                    privateKey: field(sshKey, 'privateKey') ? await dec(field(sshKey, 'privateKey')) : '',
+                    publicKey: field(sshKey, 'publicKey') ? await dec(field(sshKey, 'publicKey')) : '',
+                    keyFingerprint: field(sshKey, 'keyFingerprint') ? await dec(field(sshKey, 'keyFingerprint')) : '',
+                };
+            }
         }
 
         const fieldsRaw = field(c, 'fields') || [];
@@ -1330,8 +1339,9 @@ class BitwardenView extends ItemView {
         const groups = [
             { type: 1, label: 'ログイン', icon: 'key-round' },
             { type: 3, label: 'カード', icon: 'credit-card' },
-            { type: 2, label: 'メモ', icon: 'file-text' },
             { type: 4, label: 'ID', icon: 'user' },
+            { type: 2, label: 'セキュアメモ', icon: 'file-text' },
+            { type: 5, label: 'SSH鍵', icon: 'terminal' },
         ];
         for (const { type, label, icon } of groups) {
             const filtered = items.filter(i => i.type === type);
@@ -1347,8 +1357,9 @@ class BitwardenView extends ItemView {
         const groups = [
             { type: 1, label: 'ログイン', icon: 'key-round' },
             { type: 3, label: 'カード', icon: 'credit-card' },
-            { type: 2, label: 'メモ', icon: 'file-text' },
             { type: 4, label: 'ID', icon: 'user' },
+            { type: 2, label: 'セキュアメモ', icon: 'file-text' },
+            { type: 5, label: 'SSH鍵', icon: 'terminal' },
         ];
 
         for (const { type, label, icon } of groups) {
@@ -1370,7 +1381,7 @@ class BitwardenView extends ItemView {
             const el = group.createDiv('bw-item');
 
             const itemIcon = el.createDiv('bw-item-icon');
-            const typeIcon = { 1: 'key-round', 2: 'file-text', 3: 'credit-card', 4: 'user' }[item.type] || 'file';
+            const typeIcon = { 1: 'key-round', 2: 'file-text', 3: 'credit-card', 4: 'user', 5: 'terminal' }[item.type] || 'file';
             const domain = item.type === 1 ? extractDomain(item.login?.uris?.[0]?.uri) : null;
             if (domain && this.plugin.settings.useIcons) {
                 const server = this.plugin.settings.iconServer || 'https://icons.bitwarden.net';
@@ -1473,7 +1484,7 @@ class BitwardenItemModal extends Modal {
         contentEl.addClass('bw-modal');
         contentEl.createEl('h2', { text: this.item.name, cls: 'bw-modal-title' });
 
-        const { type, login, card, notes } = this.item;
+        const { type, login, card, sshKey, notes } = this.item;
 
         if (type === 1 && login) {
             this.addField('ユーザー名', login.username, { copyable: true });
@@ -1514,6 +1525,12 @@ class BitwardenItemModal extends Modal {
                 this.addField('有効期限', `${card.expMonth}/${card.expYear}`);
             }
             if (card.code) this.addField('CVV', card.code, { copyable: true, masked: false });
+        }
+
+        if (type === 5 && sshKey) {
+            if (sshKey.publicKey) this.addField('公開鍵', sshKey.publicKey, { copyable: true });
+            if (sshKey.privateKey) this.addField('秘密鍵', sshKey.privateKey, { copyable: true, masked: true });
+            if (sshKey.keyFingerprint) this.addField('フィンガープリント', sshKey.keyFingerprint, { copyable: true });
         }
 
         if (notes) this.addField('メモ', notes, { multiline: true });
